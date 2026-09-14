@@ -731,16 +731,3 @@ def dashboard():
     c.close(); return jsonify(result)
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=5000,debug=False)
- * Serving Flask app 'app (1)'
- * Debug mode: off
-WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
- * Running on all addresses (0.0.0.0)
- * Running on http://127.0.0.1:5000
- * Running on http://192.168.18.32:5000
-Press CTRL+C to quit
-
-
-
-
-
-
