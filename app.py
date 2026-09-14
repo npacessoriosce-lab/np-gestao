@@ -350,12 +350,28 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
+    # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
+    if USE_POSTGRES and table == 'services':
+        data.pop('active', None)
+    elif USE_POSTGRES and 'active' in data:
+        v=data.get('active')
+        if isinstance(v, (int,float)): data['active']=bool(v)
+        elif isinstance(v,str) and v.strip().lower() in ('0','1','true','false'):
+            data['active']=v.strip().lower() in ('1','true')
     try:
         names=list(data); cur=c.execute(f"INSERT INTO {table} ({','.join(names)}) VALUES ({','.join('?'*len(names))})",[data[k] for k in names]); new=cur.lastrowid; audit(c,'Criou',table,new,f'Novo registro em {table}'); c.commit()
         if table=='orders' and data.get('status')=='Concluída': apply_order_stock(c,new)
         c.commit()
     except (sqlite3.IntegrityError, getattr(psycopg.errors, 'IntegrityError', Exception) if psycopg else sqlite3.IntegrityError):
+        try: c.rollback()
+        except Exception: pass
         c.close(); return jsonify(error='Já existe um registro com esses dados.'),400
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        app.logger.exception('Erro ao salvar %s', table)
+        c.close(); return jsonify(error=f'Não foi possível salvar {table}: {e}'),500
     c.close(); return jsonify(id=new,**data)
 
 @app.put('/api/<table>/<int:item_id>')
