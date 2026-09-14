@@ -379,6 +379,11 @@ def update_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    if USE_POSTGRES and 'active' in data:
+        v=data.get('active')
+        if isinstance(v,(int,float)): data['active']=bool(v)
+        elif isinstance(v,str) and v.strip().lower() in ('0','1','true','false'):
+            data['active']=v.strip().lower() in ('1','true')
     old=None
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
@@ -465,6 +470,107 @@ def lookup():
         if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
         return jsonify(data=data.get('data',data))
     except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
+
+@app.post('/api/orders/create-complete')
+def create_order_complete():
+    """Create an OS and all of its services/payments atomically.
+    This endpoint is used by the online/mobile UI and is intentionally kept
+    independent from the generic table endpoint so PostgreSQL/Supabase gets
+    one consistent transaction.
+    """
+    d=request.get_json(silent=True) or {}
+    date=str(d.get('date') or '').strip()
+    customer=str(d.get('customer') or '').strip()
+    plate=normalize_plate(d.get('plate') or '')
+    try: km=float(d.get('km') or 0)
+    except Exception: km=0.0
+    delivery_date=str(d.get('delivery_date') or '').strip()
+    status=str(d.get('status') or 'Aberta').strip() or 'Aberta'
+    notes=str(d.get('notes') or '').strip()
+    try: discount=float(d.get('discount') or 0)
+    except Exception: discount=0.0
+    if discount < 0: discount=0.0
+
+    services=d.get('services') or []
+    if not isinstance(services,list) or not services:
+        return jsonify(error='Adicione pelo menos um serviço à OS.'),400
+
+    clean_services=[]
+    total=0.0; cost_total=0.0
+    for item in services:
+        if not isinstance(item,dict):
+            continue
+        name=str(item.get('name') or '').strip()
+        if not name:
+            continue
+        try: price=float(item.get('price') or 0)
+        except Exception: price=0.0
+        try: cost=float(item.get('cost') or 0)
+        except Exception: cost=0.0
+        item_id=int(item.get('item_id') or 0)
+        item_notes=str(item.get('notes') or '').strip()
+        clean_services.append((name,price,cost,item_id,item_notes))
+        total += price
+        cost_total += cost
+    if not clean_services:
+        return jsonify(error='Nenhum serviço válido foi informado.'),400
+    if discount > total: discount=total
+
+    payments=d.get('payments') or []
+    if not isinstance(payments,list): payments=[]
+    clean_payments=[]
+    for item in payments:
+        if not isinstance(item,dict):
+            continue
+        pay=str(item.get('payment') or '').strip()
+        try: val=float(item.get('value') or 0)
+        except Exception: val=0.0
+        pnotes=str(item.get('notes') or '').strip()
+        if pay and val>0:
+            clean_payments.append((pay,val,pnotes))
+    payment_label=str(d.get('payment') or '').strip()
+    if not payment_label and clean_payments:
+        payment_label=', '.join(f'{p}: {money(v)}' for p,v,_ in clean_payments)
+
+    c=None
+    try:
+        c=db()
+        # Ensure the vehicle plate is stored consistently with the rest of the app.
+        cur=c.execute(
+            'INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (date,customer,plate,', '.join(x[0] for x in clean_services),total,cost_total,status,km,delivery_date,discount,payment_label,notes,datetime.datetime.now().isoformat(timespec='seconds'))
+        )
+        oid=cur.lastrowid
+
+        for name,price,cost,item_id,item_notes in clean_services:
+            c.execute(
+                'INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',
+                (oid,'servico',item_id,name,1,price,cost,item_notes)
+            )
+
+        for pay,val,pnotes in clean_payments:
+            c.execute(
+                'INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',
+                (oid,date or datetime.date.today().isoformat(),pay,val,pnotes)
+            )
+
+        # If an OS is created already concluded, apply stock/finance now.
+        if status == 'Concluída':
+            apply_order_stock(c,oid)
+            register_order_finance(c,oid,clean_payments)
+
+        c.commit()
+        return jsonify(id=oid,ok=True,total=total,discount=discount,services=len(clean_services))
+    except Exception as e:
+        if c:
+            try: c.rollback()
+            except Exception: pass
+        app.logger.exception('Erro ao criar OS completa')
+        return jsonify(error='Não foi possível salvar a OS: '+str(e)),500
+    finally:
+        if c:
+            try: c.close()
+            except Exception: pass
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
