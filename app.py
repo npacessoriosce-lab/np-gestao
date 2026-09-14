@@ -451,6 +451,14 @@ def apply_order_stock(c, order_id):
             c.execute('INSERT INTO stock_moves(date,product_id,product,move_type,qty,unit_cost,order_id,notes) VALUES(?,?,?,?,?,?,?,?)',(o['date'] or datetime.date.today().isoformat(),p['id'],p['name'],'Saída',qty,p['unit_cost'] or 0,order_id,'Consumo na OS'))
     c.execute('UPDATE orders SET stock_applied=1 WHERE id=?',(order_id,))
 
+def next_id(c, table):
+    """Gera um ID seguro para tabelas PostgreSQL criadas sem identity/sequence.
+    Também funciona normalmente em tabelas que já possuem identity, pois o app
+    passa o ID explicitamente nas inserções que usam esta função.
+    """
+    r=c.execute(f'SELECT COALESCE(MAX(id),0)+1 AS next_id FROM {table}').fetchone()
+    return int(r['next_id']) if r else 1
+
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
 @app.post('/api/vehicle/lookup')
@@ -465,6 +473,69 @@ def lookup():
         if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
         return jsonify(data=data.get('data',data))
     except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
+
+@app.post('/api/orders/create-complete')
+def create_order_complete():
+    """Cria a OS inteira em uma única transação. Evita que a criação da OS
+    fique parcialmente concluída caso itens/pagamentos falhem depois.
+    """
+    d=request.json or {}
+    plate=normalize_plate(d.get('plate',''))
+    customer=str(d.get('customer') or '').strip()
+    date=str(d.get('date') or '')
+    services=d.get('services') or []
+    if not date or not plate or not customer:
+        return jsonify(error='Informe data, cliente e placa.'),400
+    if not isinstance(services,list) or not services:
+        return jsonify(error='Adicione pelo menos um serviço à OS.'),400
+    try:
+        total=sum(max(0.0,float(x.get('price') or 0)) for x in services if isinstance(x,dict))
+        cost=sum(max(0.0,float(x.get('cost') or 0)) for x in services if isinstance(x,dict))
+        discount=max(0.0,float(d.get('discount') or 0))
+        if discount>total: discount=total
+        status=str(d.get('status') or 'Aberta')
+        payment_label=str(d.get('payment') or '')
+        payments=[]
+        for x in (d.get('payments') or []):
+            if isinstance(x,dict):
+                pay=str(x.get('payment') or '').strip()
+                try: val=float(x.get('value') or 0)
+                except: val=0.0
+                if pay and val>0: payments.append((pay,val,str(x.get('notes') or '')))
+        c=db()
+        if USE_POSTGRES:
+            oid=next_id(c,'orders')
+            c.execute('INSERT INTO orders(id,date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,stock_applied,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (oid,date,customer,plate,' + '.join(str(x.get('name') or 'Serviço') for x in services if isinstance(x,dict)),total,cost,status,float(d.get('km') or 0),str(d.get('delivery_date') or ''),discount,payment_label,str(d.get('notes') or ''),False,str(d.get('created_at') or datetime.datetime.now().isoformat(timespec='seconds'))))
+        else:
+            cur=c.execute('INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,stock_applied,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (date,customer,plate,' + '.join(str(x.get('name') or 'Serviço') for x in services if isinstance(x,dict)),total,cost,status,float(d.get('km') or 0),str(d.get('delivery_date') or ''),discount,payment_label,str(d.get('notes') or ''),0,str(d.get('created_at') or datetime.datetime.now().isoformat(timespec='seconds'))))
+            oid=cur.lastrowid
+        for sv in services:
+            if not isinstance(sv,dict): continue
+            desc=str(sv.get('name') or 'Serviço')
+            price=max(0.0,float(sv.get('price') or 0)); scost=max(0.0,float(sv.get('cost') or 0)); notes=str(sv.get('notes') or '')
+            if USE_POSTGRES:
+                iid=next_id(c,'order_items')
+                c.execute('INSERT INTO order_items(id,order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?,?)',(iid,oid,'servico',int(sv.get('item_id') or 0),desc,1,price,scost,notes))
+            else:
+                c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(oid,'servico',int(sv.get('item_id') or 0),desc,1,price,scost,notes))
+        for pay,val,notes in payments:
+            if USE_POSTGRES:
+                pid=next_id(c,'order_payments')
+                c.execute('INSERT INTO order_payments(id,order_id,date,payment,value,notes) VALUES(?,?,?,?,?,?)',(pid,oid,date,pay,val,notes))
+            else:
+                c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(oid,date,pay,val,notes))
+        if status=='Concluída':
+            apply_order_stock(c,oid)
+            register_order_finance(c,oid,payments)
+        c.commit(); c.close()
+        return jsonify(id=oid,customer=customer,plate=plate,value=total,cost=cost,discount=discount,status=status)
+    except Exception as e:
+        try: c.rollback(); c.close()
+        except Exception: pass
+        app.logger.exception('Erro ao criar OS completa')
+        return jsonify(error=f'Não foi possível salvar a OS: {e}'),500
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
@@ -483,7 +554,14 @@ def order_item_add(order_id):
         desc=p['name']; price=float(d.get('unit_price') or 0); cost=float(p['unit_cost'] or 0)
     else:
         desc=d.get('description','Serviço'); price=float(d.get('unit_price') or 0); cost=float(d.get('unit_cost') or 0)
-    cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or ''))); c.commit(); c.close(); return jsonify(id=cur.lastrowid)
+    oid=next_id(c,'order_items') if USE_POSTGRES else None
+    if USE_POSTGRES:
+        cur=c.execute('INSERT INTO order_items(id,order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?,?)',(oid,order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or '')))
+        new_id=oid
+    else:
+        cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or '')))
+        new_id=cur.lastrowid
+    c.commit(); c.close(); return jsonify(id=new_id)
 
 @app.delete('/api/order-items/<int:item_id>')
 def order_item_delete(item_id):
@@ -550,12 +628,15 @@ def order_payment_add(order_id):
     if not o:
         c.close(); return jsonify(error='OS não encontrada'),404
     date=str(d.get('date') or datetime.date.today().isoformat())
-    cur=c.execute(
-        'INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',
-        (order_id,date,pay,val,notes)
-    )
+    if USE_POSTGRES:
+        pid=next_id(c,'order_payments')
+        c.execute('INSERT INTO order_payments(id,order_id,date,payment,value,notes) VALUES(?,?,?,?,?,?)',(pid,order_id,date,pay,val,notes))
+        new_id=pid
+    else:
+        cur=c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(order_id,date,pay,val,notes))
+        new_id=cur.lastrowid
     c.commit(); c.close()
-    return jsonify(id=cur.lastrowid,order_id=order_id,date=date,payment=pay,value=val,notes=notes)
+    return jsonify(id=new_id,order_id=order_id,date=date,payment=pay,value=val,notes=notes)
 
 @app.post('/api/orders/<int:order_id>/finish')
 def finish_order(order_id):
