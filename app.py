@@ -226,7 +226,7 @@ def do_login():
     c=None
     try:
         c=db()
-        row=c.execute('SELECT * FROM users WHERE lower(username)=? AND password=? AND active=1',(u,pw)).fetchone()
+        row=c.execute('SELECT * FROM users WHERE lower(username)=? AND password=? AND active=TRUE',(u,pw)).fetchone()
     except Exception as e:
         if c:
             try: c.close()
@@ -276,7 +276,7 @@ def change_password():
         return jsonify(error='A nova senha deve ter pelo menos 4 caracteres.'),400
     if new!=confirm:
         return jsonify(error='A confirmação da nova senha não confere.'),400
-    c=db(); row=c.execute('SELECT password FROM users WHERE id=? AND active=1',(session['user_id'],)).fetchone()
+    c=db(); row=c.execute('SELECT password FROM users WHERE id=? AND active=TRUE',(session['user_id'],)).fetchone()
     if not row or row['password']!=current:
         c.close(); return jsonify(error='Senha atual incorreta.'),400
     c.execute('UPDATE users SET password=? WHERE id=?',(new,session['user_id'])); c.commit(); c.close()
