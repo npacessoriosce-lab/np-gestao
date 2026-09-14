@@ -14,11 +14,16 @@ from pathlib import Path
 BASE=Path(__file__).parent
 DB=BASE/'np_gestao.db'
 DATABASE_URL=os.environ.get('DATABASE_URL','').strip()
+# Render/Supabase: força SSL e timeout para evitar respostas HTML 500 quando o pooler demora a conectar.
+if DATABASE_URL and 'sslmode=' not in DATABASE_URL.lower():
+    DATABASE_URL += ('&' if '?' in DATABASE_URL else '?') + 'sslmode=require'
+if DATABASE_URL and 'connect_timeout=' not in DATABASE_URL.lower():
+    DATABASE_URL += ('&' if '?' in DATABASE_URL else '?') + 'connect_timeout=10'
 USE_POSTGRES=bool(DATABASE_URL)
 TOKEN_FILE=BASE/'falcon_token.txt'
 MESSAGES_FILE=BASE/'mensagens.json'
 app=Flask(__name__, static_folder='.')
-app.secret_key='np-gestao-local-2026-troque-em-producao'
+app.secret_key=os.environ.get('SECRET_KEY','np-gestao-local-2026-troque-em-producao')
 app.config['SESSION_COOKIE_HTTPONLY']=True
 app.config['SESSION_COOKIE_SAMESITE']='Lax'
 app.config['SESSION_COOKIE_SECURE']=False
@@ -59,7 +64,8 @@ class PGCursor:
         row=self.cur.fetchone()
         if row is None: return None
         if isinstance(row, dict): return CompatRow(row)
-        return row
+        cols=[d.name for d in self.cur.description] if self.cur.description else []
+        return CompatRow(zip(cols,row)) if cols else row
     def fetchall(self):
         rows=self.cur.fetchall()
         cols=[d.name for d in self.cur.description] if self.cur.description else []
@@ -217,9 +223,22 @@ def do_login():
         if request.is_json:
             return jsonify(error='Informe usuário e senha.'),400
         return redirect('/login?erro=Informe%20usu%C3%A1rio%20e%20senha.')
-    c=db()
-    row=c.execute('SELECT * FROM users WHERE lower(username)=? AND password=? AND active=1',(u,pw)).fetchone()
-    c.close()
+    c=None
+    try:
+        c=db()
+        row=c.execute('SELECT * FROM users WHERE lower(username)=? AND password=? AND active=1',(u,pw)).fetchone()
+    except Exception as e:
+        if c:
+            try: c.close()
+            except Exception: pass
+        app.logger.exception('Erro no login')
+        if request.is_json:
+            return jsonify(error='Erro ao acessar o banco de dados. Verifique a conexão do Supabase no Render.'),500
+        return redirect('/login?erro=Erro%20ao%20acessar%20o%20banco%20de%20dados.')
+    finally:
+        if c:
+            try: c.close()
+            except Exception: pass
     if not row:
         if request.is_json:
             return jsonify(error='Usuário ou senha inválidos.'),401
