@@ -92,6 +92,23 @@ def db():
         return PGConn(psycopg.connect(DATABASE_URL))
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
 
+def insert_order_and_get_id(c, sql, params):
+    """Insert an order and reliably return its PostgreSQL/SQLite id."""
+    if USE_POSTGRES:
+        q=sql.replace('?', '%s')
+        q=q.rstrip().rstrip(';') + ' RETURNING id'
+        raw=c.conn.cursor()
+        try:
+            raw.execute(q, params)
+            row=raw.fetchone()
+            if not row:
+                raise RuntimeError('O banco não retornou o ID da OS.')
+            return row[0]
+        finally:
+            raw.close()
+    cur=c.execute(sql, params)
+    return cur.lastrowid
+
 def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
 def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
@@ -536,11 +553,11 @@ def create_order_complete():
     try:
         c=db()
         # Ensure the vehicle plate is stored consistently with the rest of the app.
-        cur=c.execute(
+        oid=insert_order_and_get_id(
+            c,
             'INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (date,customer,plate,', '.join(x[0] for x in clean_services),total,cost_total,status,km,delivery_date,discount,payment_label,notes,datetime.datetime.now().isoformat(timespec='seconds'))
         )
-        oid=cur.lastrowid
 
         for name,price,cost,item_id,item_notes in clean_services:
             c.execute(
