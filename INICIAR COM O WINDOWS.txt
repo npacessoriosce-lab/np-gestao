@@ -1,0 +1,10 @@
+OPCIONAL — iniciar automaticamente com o Windows
+
+1. Clique com o botão direito em "NP Gestão Automotiva.bat".
+2. Escolha "Criar atalho".
+3. Pressione Win+R.
+4. Digite: shell:startup
+5. Enter.
+6. Arraste o atalho para essa pasta.
+
+Assim o sistema será iniciado automaticamente quando o Windows entrar.

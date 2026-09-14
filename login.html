@@ -1,0 +1,25 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#ed1c24"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="NP Gestão"><link rel="manifest" href="/manifest.json"><title>NP Gestão — Login V17</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f5f7;font-family:Inter,Segoe UI,Arial,sans-serif}.box{width:min(420px,92vw);background:#fff;border:1px solid #e7e8eb;border-radius:18px;padding:28px;box-shadow:0 14px 45px #00000012}.brand{font-weight:900;font-size:24px;margin-bottom:5px}.brand span{color:#ed1c24}.sub{color:#777;margin-bottom:22px}label{display:block;font-size:13px;font-weight:700;margin:12px 0 6px}input{width:100%;padding:13px;border:1px solid #ddd;border-radius:9px;font-size:15px}button{width:100%;margin-top:18px;padding:13px;border:0;border-radius:9px;background:#ed1c24;color:#fff;font-weight:800;font-size:15px;cursor:pointer}button:disabled{opacity:.7;cursor:wait}.err{color:#b00020;font-size:13px;margin-top:12px;min-height:20px}.ok{color:#17823b;font-size:13px;margin-top:12px;min-height:20px}.hint{margin-top:18px;font-size:12px;color:#777;line-height:1.5}.status{font-size:11px;color:#888;margin-top:8px}@media(max-width:600px){body{padding:env(safe-area-inset-top) max(14px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(14px,env(safe-area-inset-left))}.box{width:100%;max-width:420px;padding:24px 20px;border-radius:16px}input{font-size:16px;min-height:48px}button{min-height:48px}} </style></head><body><div class="box"><div class="brand">NP <span>GESTÃO AUTOMOTIVA</span></div><div class="sub">Acesse sua empresa</div><form id="loginForm"> <label for="u">Usuário</label><input id="u" name="username" autocomplete="username" placeholder="Digite seu usuário" required> <label for="p">Senha</label><input id="p" name="password" type="password" autocomplete="current-password" placeholder="Digite sua senha" required> <button id="btn" type="submit">Entrar</button></form><div id="err" class="err"></div><div id="ok" class="ok"></div><div class="hint">Acessos completos:<br><b>admin</b> / <b>admin123</b> &nbsp; | &nbsp; <b>socio</b> / <b>socio123</b></div><div id="status" class="status">Verificando servidor...</div></div><script>
+const $=id=>document.getElementById(id);
+const params=new URLSearchParams(location.search);
+if(params.get('erro')) $('err').textContent=params.get('erro');
+async function checkServer(){try{const r=await fetch('/health',{cache:'no-store'}); if(!r.ok) throw 0; $('status').textContent='Servidor conectado'; $('status').style.color='#17823b';}catch(e){$('status').textContent='Servidor não respondeu. Execute o iniciar.bat.'; $('status').style.color='#b00020';}}
+$('loginForm').addEventListener('submit', async (ev)=>{
+  ev.preventDefault();
+  $('err').textContent=''; $('ok').textContent='';
+  const btn=$('btn'); btn.disabled=true; btn.textContent='Entrando...';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:$('u').value,password:$('p').value})});
+    const text=await r.text();
+    let data={}; try{data=JSON.parse(text)}catch(e){throw new Error('O servidor retornou uma resposta inválida. Reinicie o sistema pelo iniciar.bat.');}
+    if(!r.ok) throw new Error(data.error||'Usuário ou senha inválidos.');
+    const me=await fetch('/api/me',{cache:'no-store',credentials:'same-origin'});
+    if(!me.ok) throw new Error('O login foi aceito, mas a sessão não foi criada. Feche o sistema e execute o iniciar.bat novamente.');
+    $('ok').textContent='Login realizado. Abrindo o sistema...';
+    window.location.replace('/');
+  }catch(e){
+    $('err').textContent=e.message||'Não foi possível entrar.';
+    btn.disabled=false; btn.textContent='Entrar';
+  }
+});
+checkServer();
+</script></body></html>

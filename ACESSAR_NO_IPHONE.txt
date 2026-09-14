@@ -1,0 +1,14 @@
+NP GESTÃO AUTOMOTIVA — ACESSO PELO IPHONE
+
+1) Deixe o computador/servidor do NP Gestão ligado.
+2) O iPhone e o computador precisam estar na MESMA rede Wi‑Fi.
+3) No Windows, abra o arquivo iniciar_iphone.bat.
+4) O arquivo mostrará o endereço de acesso, por exemplo:
+   http://192.168.0.10:5000/login
+5) No iPhone, abra esse endereço no Safari.
+6) Entre com seu usuário e senha.
+7) No Safari, toque em Compartilhar → Adicionar à Tela de Início.
+
+IMPORTANTE:
+- Para usar o sistema de qualquer lugar (4G/5G ou outra Wi‑Fi), o sistema precisará ser hospedado em um servidor com HTTPS. Isso será feito na etapa de colocar o SaaS à venda.
+- O iPhone não precisa instalar um aplicativo da App Store para usar esta versão.

@@ -1,0 +1,8 @@
+NP GESTÃO AUTOMOTIVA V15 — ESTÁVEL
+
+Login inicial:
+Administrador: admin / admin123
+Sócio: socio / socio123
+
+Esta versão foi preparada para evitar cache antigo, sessão presa e carregamento duplicado do Dashboard.
+Execute sempre iniciar.bat e use a pasta desta versão.

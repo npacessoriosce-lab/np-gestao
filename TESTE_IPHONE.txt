@@ -1,0 +1,9 @@
+SE O IPHONE NAO ABRIR:
+
+1. O iPhone e o computador devem estar na mesma Wi-Fi.
+2. Nao use Wi-Fi de convidado/Guest, pois ela pode impedir aparelhos de se enxergarem.
+3. Abra iniciar_iphone.bat como administrador (o arquivo pede permissao automaticamente).
+4. Use exatamente o endereco mostrado na tela, incluindo :5000/login.
+5. Deixe o computador ligado e a janela do servidor aberta.
+
+Se ainda nao abrir, tire uma foto da tela do iniciar_iphone.bat mostrando o endereco e envie para o ChatGPT. Nao altere nenhum arquivo.
