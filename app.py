@@ -127,9 +127,19 @@ def addcol(c,table,col,typ,default=None):
     if col not in colnames(c,table):
         if USE_POSTGRES:
             pgtyp={'INTEGER':'integer','REAL':'double precision','TEXT':'text'}.get(typ.upper(),typ)
-            sql=f'ALTER TABLE {table} ADD COLUMN {col} {pgtyp}' + (f' DEFAULT {default}' if default is not None else '')
+            sql=f'ALTER TABLE {table} ADD COLUMN {col} {pgtyp}'
         else:
-            sql=f'ALTER TABLE {table} ADD COLUMN {col} {typ}' + (f' DEFAULT {default}' if default is not None else '')
+            sql=f'ALTER TABLE {table} ADD COLUMN {col} {typ}'
+        if default is not None:
+            # TEXT defaults need SQL string quoting (e.g. DEFAULT ''),
+            # otherwise PostgreSQL reports "syntax error at end of input".
+            if str(typ).upper() == 'TEXT':
+                d=str(default)
+                if not (len(d) >= 2 and d[0] == "'" and d[-1] == "'"):
+                    d="'" + d.replace("'", "''") + "'"
+            else:
+                d=str(default)
+            sql += f' DEFAULT {d}'
         c.execute(sql)
 
 def audit(c, action, entity, entity_id=0, description=''):
@@ -697,7 +707,8 @@ def print_order(order_id):
     vtype=(v['type'] if v else '') or ''
     uf=(v['uf'] if v else '') or ''
     vehicle_line=f"<b>Veículo:</b> {brand} {model} — {year} — {color}<br><b>Placa:</b> {o['plate'] or ''}"
-    extra=''.join([x for x in [f"<b>Tipo:</b> {vtype}" if vtype else '', f"<b>Combustível:</b> {fuel}" if fuel else '', f"<b>UF:</b> {uf}" if uf else '']])
+    # Combustível fica cadastrado no veículo, mas não é exibido na OS impressa.
+    extra=''.join([x for x in [f"<b>Tipo:</b> {vtype}" if vtype else '', f"<b>UF:</b> {uf}" if uf else '']])
     if extra: vehicle_line += '<br>'+extra
     return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.vehicle{{background:#f7f7f7;border:1px solid #ddd;border-radius:10px;padding:14px;line-height:1.7;margin:15px 0}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}</p><div class="vehicle"><b>Dados do veículo</b><br>{vehicle_line}<br><b>KM:</b> {o['km'] or 0}</div><p><b>Data:</b> {o['date'] or ''}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
 
