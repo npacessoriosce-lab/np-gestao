@@ -812,13 +812,22 @@ def budget_to_order(budget_id):
 def generate_followups():
     c=db(); orders=c.execute("SELECT customer,plate,service,date FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
     for o in orders:
-        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone(); phone=vr['phone'] if vr else ''
+        # Primeiro tenta localizar o telefone pela placa. Se a OS não tiver placa
+        # (ou a placa não estiver cadastrada), procura pelo nome do cliente.
+        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o['plate'] else None
+        phone=vr['phone'] if vr and vr['phone'] else ''
+        if not phone and o['customer']:
+            cr=c.execute("SELECT phone FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' AND LOWER(TRIM(customer))=LOWER(TRIM(?)) AND phone IS NOT NULL AND TRIM(phone)<>'' ORDER BY id DESC LIMIT 1",(o['customer'],)).fetchone()
+            phone=cr['phone'] if cr else ''
         try: base=datetime.date.fromisoformat(o['date'])
         except: continue
         for days in (15,30,60):
             due=(base+datetime.timedelta(days=days)).isoformat()
-            if not c.execute('SELECT 1 FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'],o['date'],days)).fetchone():
-                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due)); created+=1
+            existing=c.execute('SELECT id,phone FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'] or '',o['date'],days)).fetchone()
+            if not existing:
+                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'] or '',o['service'],o['date'],days,due)); created+=1
+            elif not existing['phone'] and phone:
+                c.execute('UPDATE followups SET phone=? WHERE id=?',(phone,existing['id']))
     c.commit(); c.close(); return jsonify(created=created)
 @app.post('/api/followups/<int:item_id>/done')
 def followup_done(item_id):
