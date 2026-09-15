@@ -138,7 +138,9 @@ def audit(c, action, entity, entity_id=0, description=''):
 
 def init():
     if USE_POSTGRES:
-        return
+        c=db()
+        c.execute('CREATE TABLE IF NOT EXISTS budget_items(id SERIAL PRIMARY KEY, budget_id INTEGER NOT NULL REFERENCES budgets(id) ON DELETE CASCADE, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty DOUBLE PRECISION DEFAULT 1, unit_price DOUBLE PRECISION DEFAULT 0, notes TEXT DEFAULT '')')
+        c.commit(); c.close(); return
     c=db(); c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT DEFAULT '', role TEXT DEFAULT 'socio', active INTEGER DEFAULT 1, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS vehicles(id INTEGER PRIMARY KEY, plate TEXT UNIQUE, customer TEXT, phone TEXT, model TEXT, year TEXT, color TEXT, brand TEXT, fuel TEXT, type TEXT, municipality TEXT, uf TEXT, km REAL DEFAULT 0, notes TEXT);
@@ -149,6 +151,7 @@ def init():
     CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS budget_items(id INTEGER PRIMARY KEY, budget_id INTEGER NOT NULL, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(budget_id) REFERENCES budgets(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY, date TEXT, product_id INTEGER, product TEXT, move_type TEXT, qty REAL, unit_cost REAL DEFAULT 0, order_id INTEGER DEFAULT 0, notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -741,11 +744,44 @@ def print_order(order_id):
     photos_html=''.join(f"<div class='photo'><div><b>{p['area']} — {p['moment']}</b></div><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
     return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}<br><b>Veículo:</b> {o['plate'] or ''}<br><b>Data:</b> {o['date'] or ''} &nbsp; <b>KM:</b> {o['km'] or 0}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
 
+@app.post('/api/budgets/create-complete')
+def budget_create_complete():
+    data=request.json or {}
+    customer=str(data.get('customer') or '').strip()
+    date=str(data.get('date') or '').strip()
+    if not customer or not date:
+        return jsonify(error='Informe o cliente e a data.'),400
+    services=data.get('services') or []
+    if not services:
+        return jsonify(error='Adicione pelo menos um serviço ao orçamento.'),400
+    total=sum(max(0,float(x.get('qty') or 1))*max(0,float(x.get('price') or 0)) for x in services)
+    discount=max(0,float(data.get('discount') or 0))
+    if discount>total: discount=total
+    c=db()
+    try:
+        cur=c.execute("INSERT INTO budgets(date,customer,plate,total,discount,status,notes) VALUES(?,?,?,?,?,?,?)",(date,customer,str(data.get('plate') or '').strip(),total,discount,'Orçamento',str(data.get('notes') or '')))
+        bid=cur.lastrowid
+        for x in services:
+            c.execute("INSERT INTO budget_items(budget_id,service_id,description,qty,unit_price,notes) VALUES(?,?,?,?,?,?)",(bid,int(x.get('service_id') or 0),str(x.get('name') or ''),max(0,float(x.get('qty') or 1)),max(0,float(x.get('price') or 0)),str(x.get('notes') or '')))
+        c.commit(); c.close(); return jsonify(id=bid)
+    except Exception as e:
+        try: c.rollback()
+        except: pass
+        c.close(); return jsonify(error=f'Não foi possível criar o orçamento: {e}'),400
+
+@app.get('/api/budgets/<int:budget_id>/items')
+def budget_items_get(budget_id):
+    c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM budget_items WHERE budget_id=? ORDER BY id',(budget_id,)).fetchall()]; c.close(); return jsonify(rows)
+
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     if not b: c.close(); return jsonify(error='Orçamento não encontrado'),404
-    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
+    items=c.execute('SELECT * FROM budget_items WHERE budget_id=? ORDER BY id',(budget_id,)).fetchall()
+    service_label=', '.join(str(x['description'] or '') for x in items) or 'Orçamento aprovado'
+    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],service_label,b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
+    for x in items:
+        c.execute("INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)",(oid,'servico',x['service_id'] or 0,x['description'],x['qty'],x['unit_price'],0,x['notes'] or ''))
     c.execute("UPDATE budgets SET status='Aprovado' WHERE id=?",(budget_id,)); c.commit(); c.close(); return jsonify(id=oid)
 
 @app.post('/api/followups/generate')
