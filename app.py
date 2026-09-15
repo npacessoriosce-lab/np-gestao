@@ -92,23 +92,6 @@ def db():
         return PGConn(psycopg.connect(DATABASE_URL))
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
 
-def insert_order_and_get_id(c, sql, params):
-    """Insert an order and reliably return its PostgreSQL/SQLite id."""
-    if USE_POSTGRES:
-        q=sql.replace('?', '%s')
-        q=q.rstrip().rstrip(';') + ' RETURNING id'
-        raw=c.conn.cursor()
-        try:
-            raw.execute(q, params)
-            row=raw.fetchone()
-            if not row:
-                raise RuntimeError('O banco não retornou o ID da OS.')
-            return row[0]
-        finally:
-            raw.close()
-    cur=c.execute(sql, params)
-    return cur.lastrowid
-
 def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
 def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
@@ -396,11 +379,6 @@ def update_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
-    if USE_POSTGRES and 'active' in data:
-        v=data.get('active')
-        if isinstance(v,(int,float)): data['active']=bool(v)
-        elif isinstance(v,str) and v.strip().lower() in ('0','1','true','false'):
-            data['active']=v.strip().lower() in ('1','true')
     old=None
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
@@ -471,7 +449,7 @@ def apply_order_stock(c, order_id):
             qty=float(it['qty'] or 0); newqty=float(p['qty'] or 0)-qty
             c.execute('UPDATE stock SET qty=? WHERE id=?',(newqty,p['id']))
             c.execute('INSERT INTO stock_moves(date,product_id,product,move_type,qty,unit_cost,order_id,notes) VALUES(?,?,?,?,?,?,?,?)',(o['date'] or datetime.date.today().isoformat(),p['id'],p['name'],'Saída',qty,p['unit_cost'] or 0,order_id,'Consumo na OS'))
-    c.execute('UPDATE orders SET stock_applied=TRUE WHERE id=?',(order_id,))
+    c.execute('UPDATE orders SET stock_applied=1 WHERE id=?',(order_id,))
 
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
@@ -487,107 +465,6 @@ def lookup():
         if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
         return jsonify(data=data.get('data',data))
     except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
-
-@app.post('/api/orders/create-complete')
-def create_order_complete():
-    """Create an OS and all of its services/payments atomically.
-    This endpoint is used by the online/mobile UI and is intentionally kept
-    independent from the generic table endpoint so PostgreSQL/Supabase gets
-    one consistent transaction.
-    """
-    d=request.get_json(silent=True) or {}
-    date=str(d.get('date') or '').strip()
-    customer=str(d.get('customer') or '').strip()
-    plate=normalize_plate(d.get('plate') or '')
-    try: km=float(d.get('km') or 0)
-    except Exception: km=0.0
-    delivery_date=str(d.get('delivery_date') or '').strip()
-    status=str(d.get('status') or 'Aberta').strip() or 'Aberta'
-    notes=str(d.get('notes') or '').strip()
-    try: discount=float(d.get('discount') or 0)
-    except Exception: discount=0.0
-    if discount < 0: discount=0.0
-
-    services=d.get('services') or []
-    if not isinstance(services,list) or not services:
-        return jsonify(error='Adicione pelo menos um serviço à OS.'),400
-
-    clean_services=[]
-    total=0.0; cost_total=0.0
-    for item in services:
-        if not isinstance(item,dict):
-            continue
-        name=str(item.get('name') or '').strip()
-        if not name:
-            continue
-        try: price=float(item.get('price') or 0)
-        except Exception: price=0.0
-        try: cost=float(item.get('cost') or 0)
-        except Exception: cost=0.0
-        item_id=int(item.get('item_id') or 0)
-        item_notes=str(item.get('notes') or '').strip()
-        clean_services.append((name,price,cost,item_id,item_notes))
-        total += price
-        cost_total += cost
-    if not clean_services:
-        return jsonify(error='Nenhum serviço válido foi informado.'),400
-    if discount > total: discount=total
-
-    payments=d.get('payments') or []
-    if not isinstance(payments,list): payments=[]
-    clean_payments=[]
-    for item in payments:
-        if not isinstance(item,dict):
-            continue
-        pay=str(item.get('payment') or '').strip()
-        try: val=float(item.get('value') or 0)
-        except Exception: val=0.0
-        pnotes=str(item.get('notes') or '').strip()
-        if pay and val>0:
-            clean_payments.append((pay,val,pnotes))
-    payment_label=str(d.get('payment') or '').strip()
-    if not payment_label and clean_payments:
-        payment_label=', '.join(f'{p}: {money(v)}' for p,v,_ in clean_payments)
-
-    c=None
-    try:
-        c=db()
-        # Ensure the vehicle plate is stored consistently with the rest of the app.
-        oid=insert_order_and_get_id(
-            c,
-            'INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (date,customer,plate,', '.join(x[0] for x in clean_services),total,cost_total,status,km,delivery_date,discount,payment_label,notes,datetime.datetime.now().isoformat(timespec='seconds'))
-        )
-
-        for name,price,cost,item_id,item_notes in clean_services:
-            c.execute(
-                'INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',
-                (oid,'servico',item_id,name,1,price,cost,item_notes)
-            )
-
-        for pay,val,pnotes in clean_payments:
-            c.execute(
-                'INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',
-                (oid,date or datetime.date.today().isoformat(),pay,val,pnotes)
-            )
-
-        # If an OS is created already concluded, apply stock/finance now.
-        if status == 'Concluída':
-            apply_order_stock(c,oid)
-            register_order_finance(c,oid,clean_payments)
-
-        c.commit()
-        return jsonify(id=oid,ok=True,total=total,discount=discount,services=len(clean_services))
-    except Exception as e:
-        if c:
-            try: c.rollback()
-            except Exception: pass
-        app.logger.exception('Erro ao criar OS completa')
-        return jsonify(error='Não foi possível salvar a OS: '+str(e)),500
-    finally:
-        if c:
-            try: c.close()
-            except Exception: pass
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
@@ -810,18 +687,29 @@ def vehicle_history(plate):
 
 @app.get('/api/backup')
 def backup():
-    if USE_POSTGRES:
-        return jsonify(error='O backup online será feito pelo Supabase. Para o uso local, o backup continua disponível.'),400
-    c=db(); c.execute('PRAGMA wal_checkpoint(FULL)'); c.close()
-    import zipfile
-    stamp=f'{datetime.datetime.now():%Y%m%d_%H%M%S}'; name=f'np_gestao_backup_{stamp}.zip'; dest=BASE/name
-    with zipfile.ZipFile(dest,'w',zipfile.ZIP_DEFLATED) as z:
-        z.write(DB,arcname='np_gestao.db')
-        photos=BASE/'uploads'/'orders'
-        if photos.exists():
-            for f in photos.rglob('*'):
-                if f.is_file(): z.write(f,arcname=str(Path('uploads/orders')/f.name))
-    return send_file(dest,as_attachment=True,download_name=name)
+    """Generate a real downloadable backup for both SQLite and PostgreSQL deployments."""
+    stamp=f'{datetime.datetime.now():%Y%m%d_%H%M%S}'
+    name=f'np_gestao_backup_{stamp}.zip'
+    import io, zipfile, json
+    buf=io.BytesIO()
+    try:
+        c=db()
+        payload={"backup_date":datetime.datetime.now().isoformat(timespec='seconds'),"database":"postgresql" if USE_POSTGRES else "sqlite","tables":{}}
+        for table in sorted(TABLES):
+            rows=[dict(x) for x in c.execute(f'SELECT * FROM {table}').fetchall()]
+            payload["tables"][table]=rows
+        c.close()
+        with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
+            z.writestr('backup.json',json.dumps(payload,ensure_ascii=False,indent=2,default=str))
+            z.writestr('LEIA-ME.txt','Backup do NP Gestão. O arquivo backup.json contém os dados de todas as tabelas exportadas.\n')
+        buf.seek(0)
+        return send_file(buf,as_attachment=True,download_name=name,mimetype='application/zip')
+    except Exception as e:
+        try:
+            c.close()
+        except Exception:
+            pass
+        return jsonify(error=f'Falha ao gerar backup: {e}'),500
 
 @app.post('/api/stock/<int:product_id>/move')
 def stock_move(product_id):
