@@ -339,6 +339,19 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+@app.get('/api/vehicles/by-customer/<path:customer>')
+def vehicles_by_customer(customer):
+    name=str(customer or '').strip()
+    if not name:
+        return jsonify([])
+    c=db()
+    rows=[dict(x) for x in c.execute(
+        'SELECT * FROM vehicles WHERE LOWER(TRIM(customer))=LOWER(TRIM(?)) ORDER BY id DESC',
+        (name,)
+    ).fetchall()]
+    c.close()
+    return jsonify(rows)
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -493,7 +506,7 @@ def create_order_complete():
         c=db()
         cur=c.execute(
             "INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (date,customer,plate,value,cost,status,km,delivery_date,discount,payment,notes,created_at)
+            (date,customer,plate,', '.join(str(x.get('name') or 'Serviço').strip() for x in services),value,cost,status,km,delivery_date,discount,payment,notes,created_at)
         )
         order_id=cur.lastrowid
         if not order_id:
