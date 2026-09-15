@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect
-import sqlite3, os, requests, datetime, shutil, json, re
+import sqlite3, os, requests, datetime, shutil, json, re, base64
 
 try:
     import psycopg
@@ -139,11 +139,13 @@ def audit(c, action, entity, entity_id=0, description=''):
 def init():
     if USE_POSTGRES:
         c=db()
-        c.execute("CREATE TABLE IF NOT EXISTS budget_items(id SERIAL PRIMARY KEY, budget_id INTEGER NOT NULL REFERENCES budgets(id) ON DELETE CASCADE, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty DOUBLE PRECISION DEFAULT 1, unit_price DOUBLE PRECISION DEFAULT 0, notes TEXT DEFAULT '')")
-        # Placa é opcional. Corrige registros antigos que ficaram com placa vazia ('')
-        # para NULL, evitando conflito com a restrição UNIQUE da placa no PostgreSQL.
-        c.execute("UPDATE vehicles SET plate=NULL WHERE plate IS NOT NULL AND BTRIM(plate)=''")
-        c.commit(); c.close(); return
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY, fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '')")
+            addcol(c,'company','logo_data','TEXT','')
+            c.commit()
+        finally:
+            c.close()
+        return
     c=db(); c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT DEFAULT '', role TEXT DEFAULT 'socio', active INTEGER DEFAULT 1, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS vehicles(id INTEGER PRIMARY KEY, plate TEXT UNIQUE, customer TEXT, phone TEXT, model TEXT, year TEXT, color TEXT, brand TEXT, fuel TEXT, type TEXT, municipality TEXT, uf TEXT, km REAL DEFAULT 0, notes TEXT);
@@ -154,13 +156,12 @@ def init():
     CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS budget_items(id INTEGER PRIMARY KEY, budget_id INTEGER NOT NULL, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(budget_id) REFERENCES budgets(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY, date TEXT, product_id INTEGER, product TEXT, move_type TEXT, qty REAL, unit_cost REAL DEFAULT 0, order_id INTEGER DEFAULT 0, notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS order_payments(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, date TEXT, payment TEXT NOT NULL, value REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, date TEXT, username TEXT, action TEXT, entity TEXT, entity_id INTEGER DEFAULT 0, description TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '');
     ''')
     # migrations from V12
     addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
@@ -316,13 +317,29 @@ def company_logo():
     if ext not in {'.jpg','.jpeg','.png','.webp'}: return jsonify(error='Use JPG, PNG ou WEBP.'),400
     folder=BASE/'uploads'/'company'; folder.mkdir(parents=True,exist_ok=True)
     filename='logo'+ext
+    raw=f.read()
+    f.seek(0)
     f.save(folder/filename)
-    c=db(); c.execute('INSERT OR IGNORE INTO company(id) VALUES(1)'); c.execute('UPDATE company SET logo_filename=? WHERE id=1',(filename,)); c.commit(); c.close()
+    data_uri='data:'+f.mimetype+';base64,'+base64.b64encode(raw).decode('ascii')
+    c=db(); c.execute('INSERT OR IGNORE INTO company(id) VALUES(1)');
+    try:
+        c.execute('UPDATE company SET logo_filename=?, logo_data=? WHERE id=1',(filename,data_uri))
+    except Exception:
+        c.execute('UPDATE company SET logo_filename=? WHERE id=1',(filename,))
+    c.commit(); c.close()
     return jsonify(ok=True,url='/uploads/company/'+filename)
 
 @app.get('/uploads/company/<path:filename>')
 def company_upload(filename):
-    return send_from_directory(BASE/'uploads'/'company',filename)
+    path=BASE/'uploads'/'company'/filename
+    if path.exists(): return send_from_directory(BASE/'uploads'/'company',filename)
+    c=db(); row=c.execute('SELECT logo_data FROM company WHERE id=1').fetchone(); c.close()
+    data=row['logo_data'] if row else ''
+    if not data or not str(data).startswith('data:'): return ('',404)
+    header,payload=str(data).split(',',1)
+    import io
+    mime=header[5:].split(';',1)[0] or 'image/png'
+    return send_file(io.BytesIO(base64.b64decode(payload)), mimetype=mime, download_name=filename)
 
 @app.get('/api/config')
 def config(): return jsonify(configured=bool(get_token()))
@@ -345,32 +362,6 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
-@app.get('/api/customers/search')
-def customers_search():
-    q=str(request.args.get('q') or '').strip()
-    if not q:
-        return jsonify([])
-    c=db()
-    rows=[dict(x) for x in c.execute(
-        "SELECT customer, MAX(phone) AS phone FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' AND LOWER(TRIM(customer)) LIKE LOWER(TRIM(?)) || '%' GROUP BY customer ORDER BY customer LIMIT 20",
-        (q,)
-    ).fetchall()]
-    c.close()
-    return jsonify(rows)
-
-@app.get('/api/vehicles/by-customer/<path:customer>')
-def vehicles_by_customer(customer):
-    name=str(customer or '').strip()
-    if not name:
-        return jsonify([])
-    c=db()
-    rows=[dict(x) for x in c.execute(
-        'SELECT * FROM vehicles WHERE LOWER(TRIM(customer))=LOWER(TRIM(?)) ORDER BY id DESC',
-        (name,)
-    ).fetchall()]
-    c.close()
-    return jsonify(rows)
-
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -382,11 +373,6 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
-    # Placa não é obrigatória no cadastro de cliente.
-    # Nunca grave string vazia em coluna UNIQUE: use NULL para permitir vários clientes sem placa.
-    if table == 'vehicles' and 'plate' in data:
-        plate = str(data.get('plate') or '').strip().upper()
-        data['plate'] = plate or None
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':
@@ -416,9 +402,6 @@ def update_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
-    if table == 'vehicles' and 'plate' in data:
-        plate = str(data.get('plate') or '').strip().upper()
-        data['plate'] = plate or None
     old=None
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
@@ -440,28 +423,8 @@ def delete_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}'); c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
 
-def normalize_payment_method(value):
-    """Return a clean, consistent payment method label for reports/finance."""
-    raw=str(value or '').strip()
-    if not raw: return ''
-    # Legacy records may contain values such as "Pix: R$ 149,99".
-    if ':' in raw:
-        raw=raw.split(':',1)[0].strip()
-    aliases={
-        'pix':'Pix', 'PIX':'Pix',
-        'dinheiro':'Dinheiro',
-        'cartao':'Cartão', 'cartão':'Cartão',
-        'cartão de débito':'Cartão de débito', 'cartao de debito':'Cartão de débito',
-        'cartão de crédito':'Cartão de crédito', 'cartao de credito':'Cartão de crédito',
-        'transferência bancária':'Transferência bancária', 'transferencia bancaria':'Transferência bancária',
-        'transferência':'Transferência bancária', 'transferencia':'Transferência bancária',
-        'boleto':'Boleto', 'cheque':'Cheque', 'mercado pago':'Mercado Pago',
-        'link de pagamento':'Link de pagamento', 'outro':'Outro'
-    }
-    return aliases.get(raw.lower(), raw)
-
 def register_order_finance(c, order_id, payments=None):
-    """Register the OS payment in finance without duplicating entries."""
+    """Register the confirmed OS payment in finance without duplicating entries."""
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
         return 0.0
@@ -471,18 +434,18 @@ def register_order_finance(c, order_id, payments=None):
         raw=str(o['payment'] or '').strip()
         if raw:
             # Legacy/single-payment OS: the whole total belongs to the selected method.
-            payments=[(normalize_payment_method(raw),total,'')]
+            payments=[(raw,total,'')]
     # Normalize valid payment rows
     normalized=[]
     for item in payments:
         if isinstance(item, dict):
-            pay=normalize_payment_method(item.get('payment'))
+            pay=str(item.get('payment') or '').strip()
             try: val=float(item.get('value') or 0)
             except: val=0.0
             notes=str(item.get('notes') or '').strip()
         else:
             pay,val,notes=item
-            pay=normalize_payment_method(pay)
+            pay=str(pay or '').strip()
             try: val=float(val or 0)
             except: val=0.0
             notes=str(notes or '').strip()
@@ -509,7 +472,7 @@ def apply_order_stock(c, order_id):
             qty=float(it['qty'] or 0); newqty=float(p['qty'] or 0)-qty
             c.execute('UPDATE stock SET qty=? WHERE id=?',(newqty,p['id']))
             c.execute('INSERT INTO stock_moves(date,product_id,product,move_type,qty,unit_cost,order_id,notes) VALUES(?,?,?,?,?,?,?,?)',(o['date'] or datetime.date.today().isoformat(),p['id'],p['name'],'Saída',qty,p['unit_cost'] or 0,order_id,'Consumo na OS'))
-    c.execute('UPDATE orders SET stock_applied=TRUE WHERE id=?',(order_id,))
+    c.execute('UPDATE orders SET stock_applied=1 WHERE id=?',(order_id,))
 
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
@@ -525,83 +488,6 @@ def lookup():
         if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
         return jsonify(data=data.get('data',data))
     except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
-
-@app.post('/api/orders/create-complete')
-def create_order_complete():
-    """Create an OS with its selected services and optional payments in one transaction.
-    Customer and date are required; plate is optional.
-    """
-    d=request.json or {}
-    customer=str(d.get('customer') or '').strip()
-    date=str(d.get('date') or '').strip()
-    plate=normalize_plate(d.get('plate') or '')
-    if not customer: return jsonify(error='Informe o nome do cliente.'),400
-    if not date: return jsonify(error='Informe a data da OS.'),400
-    services=d.get('services') or []
-    if not services: return jsonify(error='Adicione pelo menos um serviço à OS.'),400
-    try:
-        value=sum(float(x.get('price') or 0) for x in services)
-        cost=sum(float(x.get('cost') or 0) for x in services)
-        discount=max(0.0,float(d.get('discount') or 0))
-        if discount>value: discount=value
-        status=str(d.get('status') or 'Aberta')
-        payment_methods=[normalize_payment_method(x.get('payment')) for x in (d.get('payments') or []) if isinstance(x,dict) and x.get('payment')]
-        payment=str(d.get('payment') or '')
-        if payment_methods:
-            payment=' + '.join(dict.fromkeys(payment_methods))
-        notes=str(d.get('notes') or '')
-        km=float(d.get('km') or 0)
-        delivery_date=str(d.get('delivery_date') or '')
-        created_at=str(d.get('created_at') or datetime.datetime.now().isoformat(timespec='seconds'))
-        c=db()
-        cur=c.execute(
-            "INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (date,customer,plate,', '.join(str(x.get('name') or 'Serviço').strip() for x in services),value,cost,status,km,delivery_date,discount,payment,notes,created_at)
-        )
-        order_id=cur.lastrowid
-        if not order_id:
-            row=c.execute('SELECT id FROM orders WHERE customer=? AND date=? ORDER BY id DESC LIMIT 1',(customer,date)).fetchone()
-            order_id=row['id'] if row else None
-        if not order_id:
-            raise RuntimeError('Não foi possível obter o número da OS criada.')
-        service_names=[]
-        for item in services:
-            name=str(item.get('name') or 'Serviço').strip()
-            price=float(item.get('price') or 0)
-            item_cost=float(item.get('cost') or 0)
-            item_id=int(item.get('item_id') or 0)
-            item_notes=str(item.get('notes') or '')
-            c.execute(
-                "INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)",
-                (order_id,'servico',item_id,name,1,price,item_cost,item_notes)
-            )
-            service_names.append(name)
-        # Keep the main OS service field useful for reports/history.
-        if service_names:
-            c.execute('UPDATE orders SET service=? WHERE id=?',(', '.join(service_names),order_id))
-        payments=d.get('payments') or []
-        for pay in payments:
-            method=str(pay.get('payment') or '').strip()
-            try: pvalue=float(pay.get('value') or 0)
-            except: pvalue=0.0
-            if method and pvalue>0:
-                c.execute(
-                    "INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)",
-                    (order_id,date,method,pvalue,str(pay.get('notes') or ''))
-                )
-        # If payment was entered directly while creating the OS, register it immediately in Financeiro.
-        # The payment can be total or partial; later "Receber / Concluir" rebuilds the OS's incoming entries.
-        if payments:
-            register_order_finance(c,order_id,payments)
-        if status=='Concluída':
-            apply_order_stock(c,order_id)
-        c.commit(); c.close()
-        return jsonify(id=order_id,ok=True)
-    except Exception as e:
-        try: c.rollback(); c.close()
-        except Exception: pass
-        app.logger.exception('Erro ao criar OS completa')
-        return jsonify(error=f'Não foi possível criar a OS: {e}'),500
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
@@ -755,7 +641,7 @@ def get_company():
     return dict(row) if row else {}
 
 def company_header_html(comp):
-    logo=f"<img src='/uploads/company/{comp['logo_filename']}' style='max-height:75px;max-width:220px;object-fit:contain;margin-bottom:8px'>" if comp.get('logo_filename') else ''
+    logo=f"<img src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' style='max-height:75px;max-width:220px;object-fit:contain;margin-bottom:8px'>" if comp.get('logo_filename') else ''
     name=comp.get('fantasy_name') or comp.get('legal_name') or 'NP Acessórios'
     details=[]
     if comp.get('cnpj'): details.append('CNPJ: '+comp['cnpj'])
@@ -788,73 +674,51 @@ def whatsapp_complete(order_id):
 
 @app.get('/api/orders/<int:order_id>/print')
 def print_order(order_id):
-    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone(); items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=?',(order_id,)).fetchall()]; photos=[dict(x) for x in c.execute('SELECT * FROM order_photos WHERE order_id=? ORDER BY area,moment,id',(order_id,)).fetchall()]; c.close()
+    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
+    photos=[dict(x) for x in c.execute('SELECT * FROM order_photos WHERE order_id=? ORDER BY area,moment,id',(order_id,)).fetchall()] if o else []
+    v=None
+    if o:
+        plate=str(o['plate'] or '').strip()
+        if plate:
+            v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
+        if not v and str(o['customer'] or '').strip():
+            v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
+    c.close()
     if not o: return 'OS não encontrada',404
     money=lambda v: f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
     rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{money(i['unit_price'])}</td><td>{money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
     photos_html=''.join(f"<div class='photo'><div><b>{p['area']} — {p['moment']}</b></div><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
-    return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}<br><b>Veículo:</b> {o['plate'] or ''}<br><b>Data:</b> {o['date'] or ''} &nbsp; <b>KM:</b> {o['km'] or 0}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
-
-@app.post('/api/budgets/create-complete')
-def budget_create_complete():
-    data=request.json or {}
-    customer=str(data.get('customer') or '').strip()
-    date=str(data.get('date') or '').strip()
-    if not customer or not date:
-        return jsonify(error='Informe o cliente e a data.'),400
-    services=data.get('services') or []
-    if not services:
-        return jsonify(error='Adicione pelo menos um serviço ao orçamento.'),400
-    total=sum(max(0,float(x.get('qty') or 1))*max(0,float(x.get('price') or 0)) for x in services)
-    discount=max(0,float(data.get('discount') or 0))
-    if discount>total: discount=total
-    c=db()
-    try:
-        cur=c.execute("INSERT INTO budgets(date,customer,plate,total,discount,status,notes) VALUES(?,?,?,?,?,?,?)",(date,customer,str(data.get('plate') or '').strip(),total,discount,'Orçamento',str(data.get('notes') or '')))
-        bid=cur.lastrowid
-        for x in services:
-            c.execute("INSERT INTO budget_items(budget_id,service_id,description,qty,unit_price,notes) VALUES(?,?,?,?,?,?)",(bid,int(x.get('service_id') or 0),str(x.get('name') or ''),max(0,float(x.get('qty') or 1)),max(0,float(x.get('price') or 0)),str(x.get('notes') or '')))
-        c.commit(); c.close(); return jsonify(id=bid)
-    except Exception as e:
-        try: c.rollback()
-        except: pass
-        c.close(); return jsonify(error=f'Não foi possível criar o orçamento: {e}'),400
-
-@app.get('/api/budgets/<int:budget_id>/items')
-def budget_items_get(budget_id):
-    c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM budget_items WHERE budget_id=? ORDER BY id',(budget_id,)).fetchall()]; c.close(); return jsonify(rows)
+    brand=(v['brand'] if v else '') or ''
+    model=(v['model'] if v else '') or ''
+    year=(v['year'] if v else '') or ''
+    color=(v['color'] if v else '') or ''
+    fuel=(v['fuel'] if v else '') or ''
+    vtype=(v['type'] if v else '') or ''
+    uf=(v['uf'] if v else '') or ''
+    vehicle_line=f"<b>Veículo:</b> {brand} {model} — {year} — {color}<br><b>Placa:</b> {o['plate'] or ''}"
+    extra=''.join([x for x in [f"<b>Tipo:</b> {vtype}" if vtype else '', f"<b>Combustível:</b> {fuel}" if fuel else '', f"<b>UF:</b> {uf}" if uf else '']])
+    if extra: vehicle_line += '<br>'+extra
+    return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.vehicle{{background:#f7f7f7;border:1px solid #ddd;border-radius:10px;padding:14px;line-height:1.7;margin:15px 0}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}</p><div class="vehicle"><b>Dados do veículo</b><br>{vehicle_line}<br><b>KM:</b> {o['km'] or 0}</div><p><b>Data:</b> {o['date'] or ''}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
 
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     if not b: c.close(); return jsonify(error='Orçamento não encontrado'),404
-    items=c.execute('SELECT * FROM budget_items WHERE budget_id=? ORDER BY id',(budget_id,)).fetchall()
-    service_label=', '.join(str(x['description'] or '') for x in items) or 'Orçamento aprovado'
-    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],service_label,b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
-    for x in items:
-        c.execute("INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)",(oid,'servico',x['service_id'] or 0,x['description'],x['qty'],x['unit_price'],0,x['notes'] or ''))
+    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
     c.execute("UPDATE budgets SET status='Aprovado' WHERE id=?",(budget_id,)); c.commit(); c.close(); return jsonify(id=oid)
 
 @app.post('/api/followups/generate')
 def generate_followups():
     c=db(); orders=c.execute("SELECT customer,plate,service,date FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
     for o in orders:
-        # Primeiro tenta localizar o telefone pela placa. Se a OS não tiver placa
-        # (ou a placa não estiver cadastrada), procura pelo nome do cliente.
-        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o['plate'] else None
-        phone=vr['phone'] if vr and vr['phone'] else ''
-        if not phone and o['customer']:
-            cr=c.execute("SELECT phone FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' AND LOWER(TRIM(customer))=LOWER(TRIM(?)) AND phone IS NOT NULL AND TRIM(phone)<>'' ORDER BY id DESC LIMIT 1",(o['customer'],)).fetchone()
-            phone=cr['phone'] if cr else ''
+        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone(); phone=vr['phone'] if vr else ''
         try: base=datetime.date.fromisoformat(o['date'])
         except: continue
         for days in (15,30,60):
             due=(base+datetime.timedelta(days=days)).isoformat()
-            existing=c.execute('SELECT id,phone FROM followups WHERE customer=? AND plate=? AND service_date=? AND days_after=?',(o['customer'],o['plate'] or '',o['date'],days)).fetchone()
-            if not existing:
-                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'] or '',o['service'],o['date'],days,due)); created+=1
-            elif not existing['phone'] and phone:
-                c.execute('UPDATE followups SET phone=? WHERE id=?',(phone,existing['id']))
+            if not c.execute('SELECT 1 FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'],o['date'],days)).fetchone():
+                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due)); created+=1
     c.commit(); c.close(); return jsonify(created=created)
 @app.post('/api/followups/<int:item_id>/done')
 def followup_done(item_id):
@@ -866,29 +730,18 @@ def vehicle_history(plate):
 
 @app.get('/api/backup')
 def backup():
-    """Generate a real downloadable backup for both SQLite and PostgreSQL deployments."""
-    stamp=f'{datetime.datetime.now():%Y%m%d_%H%M%S}'
-    name=f'np_gestao_backup_{stamp}.zip'
-    import io, zipfile, json
-    buf=io.BytesIO()
-    try:
-        c=db()
-        payload={"backup_date":datetime.datetime.now().isoformat(timespec='seconds'),"database":"postgresql" if USE_POSTGRES else "sqlite","tables":{}}
-        for table in sorted(TABLES):
-            rows=[dict(x) for x in c.execute(f'SELECT * FROM {table}').fetchall()]
-            payload["tables"][table]=rows
-        c.close()
-        with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
-            z.writestr('backup.json',json.dumps(payload,ensure_ascii=False,indent=2,default=str))
-            z.writestr('LEIA-ME.txt','Backup do NP Gestão. O arquivo backup.json contém os dados de todas as tabelas exportadas.\n')
-        buf.seek(0)
-        return send_file(buf,as_attachment=True,download_name=name,mimetype='application/zip')
-    except Exception as e:
-        try:
-            c.close()
-        except Exception:
-            pass
-        return jsonify(error=f'Falha ao gerar backup: {e}'),500
+    if USE_POSTGRES:
+        return jsonify(error='O backup online será feito pelo Supabase. Para o uso local, o backup continua disponível.'),400
+    c=db(); c.execute('PRAGMA wal_checkpoint(FULL)'); c.close()
+    import zipfile
+    stamp=f'{datetime.datetime.now():%Y%m%d_%H%M%S}'; name=f'np_gestao_backup_{stamp}.zip'; dest=BASE/name
+    with zipfile.ZipFile(dest,'w',zipfile.ZIP_DEFLATED) as z:
+        z.write(DB,arcname='np_gestao.db')
+        photos=BASE/'uploads'/'orders'
+        if photos.exists():
+            for f in photos.rglob('*'):
+                if f.is_file(): z.write(f,arcname=str(Path('uploads/orders')/f.name))
+    return send_file(dest,as_attachment=True,download_name=name)
 
 @app.post('/api/stock/<int:product_id>/move')
 def stock_move(product_id):
@@ -922,29 +775,8 @@ def report():
     c=db()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
-    # Serviços realizados: mostrar cada serviço de cada OS concluída, sem agrupar.
-    # Assim, quando uma OS é finalizada, cada item de serviço aparece separadamente
-    # no relatório. Uma OS com dois serviços gera duas linhas, mesmo que os nomes sejam iguais.
-    services=[dict(x) for x in c.execute("""
-        SELECT oi.id AS item_id,
-               oi.order_id AS order_id,
-               o.date AS date,
-               o.customer AS customer,
-               oi.description AS service,
-               COALESCE(oi.qty,0) AS qtd,
-               COALESCE(oi.qty * oi.unit_price,0) AS total,
-               COALESCE(oi.qty * oi.unit_cost,0) AS custo
-        FROM order_items oi
-        JOIN orders o ON o.id=oi.order_id
-        WHERE oi.item_type='servico' AND o.date LIKE ? AND o.status='Concluída'
-        ORDER BY o.date DESC, o.id DESC, oi.id ASC
-    """,(month+'%',)).fetchall()]
-    method_totals={}
-    method_rows=c.execute("SELECT payment,value FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)).fetchall()
-    for mr in method_rows:
-        method=normalize_payment_method(mr['payment']) or 'Não informado'
-        method_totals[method]=method_totals.get(method,0.0)+float(mr['value'] or 0)
-    methods=[{'payment':k,'total':v} for k,v in sorted(method_totals.items(), key=lambda kv: kv[1], reverse=True)]
+    services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
+    methods=[dict(x) for x in c.execute("SELECT payment,COALESCE(SUM(value),0) total FROM finance WHERE kind='Entrada' AND date LIKE ? GROUP BY payment ORDER BY total DESC",(month+'%',)).fetchall()]
     recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND date LIKE ? ORDER BY date DESC,id DESC LIMIT 100",(month+'%',)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low)
