@@ -138,18 +138,39 @@ let customerSearchTimer=null;
 async function searchOrderCustomers(){
   let q=(ocustomer.value||'').trim();
   clearTimeout(customerSearchTimer);
-  if(q.length<1){ hideCustomerSuggestions(); return; }
+  let box=document.getElementById('orderCustomerSuggestions');
+  if(!box)return;
+  if(q.length<1){ box.innerHTML=''; box.classList.add('hidden'); return; }
   customerSearchTimer=setTimeout(async()=>{
     try{
-      let rows=await api('/api/customers/search?q='+encodeURIComponent(q));
-      let box=document.getElementById('orderCustomerSuggestions');
-      if(!box)return;
-      if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
+      let rows=[];
+      try{
+        rows=await api('/api/customers/search?q='+encodeURIComponent(q));
+      }catch(e){
+        // Fallback: if the search endpoint is unavailable, use the vehicle/client list.
+        let all=await api('/api/vehicles');
+        let seen=new Set();
+        rows=(all||[]).filter(x=>{
+          let name=String(x.customer||'').trim();
+          let key=name.toLowerCase();
+          if(!name || !key.startsWith(q.toLowerCase()) || seen.has(key))return false;
+          seen.add(key); return true;
+        }).sort((a,b)=>String(a.customer||'').localeCompare(String(b.customer||''))).slice(0,20).map(x=>({customer:x.customer,phone:x.phone||''}));
+      }
+      if(!rows.length){
+        box.innerHTML='<div style="padding:12px;color:#777;font-size:13px">Nenhum cliente encontrado.</div>';
+        box.classList.remove('hidden');
+        window.orderCustomerSuggestions=[];
+        return;
+      }
       box.innerHTML=rows.map((x,i)=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault();selectOrderCustomerName(${i})"><b>${esc(x.customer)}</b>${x.phone?`<span style="display:block;font-size:12px;color:#777;margin-top:2px">${esc(x.phone)}</span>`:''}</button>`).join('');
       box.classList.remove('hidden');
       window.orderCustomerSuggestions=rows;
-    }catch(e){ hideCustomerSuggestions(); }
-  },120);
+    }catch(e){
+      box.innerHTML='<div style="padding:12px;color:#b00020;font-size:13px">Não foi possível carregar os clientes.</div>';
+      box.classList.remove('hidden');
+    }
+  },80);
 }
 function hideCustomerSuggestions(){let box=document.getElementById('orderCustomerSuggestions');if(box)box.classList.add('hidden');}
 async function selectOrderCustomerName(i){
