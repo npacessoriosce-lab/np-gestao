@@ -440,8 +440,28 @@ def delete_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}'); c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
 
+def normalize_payment_method(value):
+    """Return a clean, consistent payment method label for reports/finance."""
+    raw=str(value or '').strip()
+    if not raw: return ''
+    # Legacy records may contain values such as "Pix: R$ 149,99".
+    if ':' in raw:
+        raw=raw.split(':',1)[0].strip()
+    aliases={
+        'pix':'Pix', 'PIX':'Pix',
+        'dinheiro':'Dinheiro',
+        'cartao':'Cartão', 'cartão':'Cartão',
+        'cartão de débito':'Cartão de débito', 'cartao de debito':'Cartão de débito',
+        'cartão de crédito':'Cartão de crédito', 'cartao de credito':'Cartão de crédito',
+        'transferência bancária':'Transferência bancária', 'transferencia bancaria':'Transferência bancária',
+        'transferência':'Transferência bancária', 'transferencia':'Transferência bancária',
+        'boleto':'Boleto', 'cheque':'Cheque', 'mercado pago':'Mercado Pago',
+        'link de pagamento':'Link de pagamento', 'outro':'Outro'
+    }
+    return aliases.get(raw.lower(), raw)
+
 def register_order_finance(c, order_id, payments=None):
-    """Register the confirmed OS payment in finance without duplicating entries."""
+    """Register the OS payment in finance without duplicating entries."""
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
         return 0.0
@@ -451,18 +471,18 @@ def register_order_finance(c, order_id, payments=None):
         raw=str(o['payment'] or '').strip()
         if raw:
             # Legacy/single-payment OS: the whole total belongs to the selected method.
-            payments=[(raw,total,'')]
+            payments=[(normalize_payment_method(raw),total,'')]
     # Normalize valid payment rows
     normalized=[]
     for item in payments:
         if isinstance(item, dict):
-            pay=str(item.get('payment') or '').strip()
+            pay=normalize_payment_method(item.get('payment'))
             try: val=float(item.get('value') or 0)
             except: val=0.0
             notes=str(item.get('notes') or '').strip()
         else:
             pay,val,notes=item
-            pay=str(pay or '').strip()
+            pay=normalize_payment_method(pay)
             try: val=float(val or 0)
             except: val=0.0
             notes=str(notes or '').strip()
@@ -525,7 +545,10 @@ def create_order_complete():
         discount=max(0.0,float(d.get('discount') or 0))
         if discount>value: discount=value
         status=str(d.get('status') or 'Aberta')
+        payment_methods=[normalize_payment_method(x.get('payment')) for x in (d.get('payments') or []) if isinstance(x,dict) and x.get('payment')]
         payment=str(d.get('payment') or '')
+        if payment_methods:
+            payment=' + '.join(dict.fromkeys(payment_methods))
         notes=str(d.get('notes') or '')
         km=float(d.get('km') or 0)
         delivery_date=str(d.get('delivery_date') or '')
@@ -566,6 +589,10 @@ def create_order_complete():
                     "INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)",
                     (order_id,date,method,pvalue,str(pay.get('notes') or ''))
                 )
+        # If payment was entered directly while creating the OS, register it immediately in Financeiro.
+        # The payment can be total or partial; later "Receber / Concluir" rebuilds the OS's incoming entries.
+        if payments:
+            register_order_finance(c,order_id,payments)
         if status=='Concluída':
             apply_order_stock(c,order_id)
         c.commit(); c.close()
@@ -823,7 +850,7 @@ def generate_followups():
         except: continue
         for days in (15,30,60):
             due=(base+datetime.timedelta(days=days)).isoformat()
-            existing=c.execute('SELECT id,phone FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'] or '',o['date'],days)).fetchone()
+            existing=c.execute('SELECT id,phone FROM followups WHERE customer=? AND plate=? AND service_date=? AND days_after=?',(o['customer'],o['plate'] or '',o['date'],days)).fetchone()
             if not existing:
                 c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'] or '',o['service'],o['date'],days,due)); created+=1
             elif not existing['phone'] and phone:
@@ -896,7 +923,12 @@ def report():
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
     services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
-    methods=[dict(x) for x in c.execute("SELECT payment,COALESCE(SUM(value),0) total FROM finance WHERE kind='Entrada' AND date LIKE ? GROUP BY payment ORDER BY total DESC",(month+'%',)).fetchall()]
+    method_totals={}
+    method_rows=c.execute("SELECT payment,value FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)).fetchall()
+    for mr in method_rows:
+        method=normalize_payment_method(mr['payment']) or 'Não informado'
+        method_totals[method]=method_totals.get(method,0.0)+float(mr['value'] or 0)
+    methods=[{'payment':k,'total':v} for k,v in sorted(method_totals.items(), key=lambda kv: kv[1], reverse=True)]
     recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND date LIKE ? ORDER BY date DESC,id DESC LIMIT 100",(month+'%',)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low)
