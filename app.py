@@ -149,7 +149,10 @@ def init():
         c=db()
         try:
             c.execute("CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY, fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '')")
-            addcol(c,'company','logo_data','TEXT','')
+            # Migração segura do logo: sem DEFAULT vazio no PostgreSQL.
+            if 'logo_data' not in colnames(c,'company'):
+                c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
+                c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
             c.commit()
         finally:
             c.close()
