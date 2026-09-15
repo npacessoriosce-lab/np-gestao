@@ -140,6 +140,9 @@ def init():
     if USE_POSTGRES:
         c=db()
         c.execute("CREATE TABLE IF NOT EXISTS budget_items(id SERIAL PRIMARY KEY, budget_id INTEGER NOT NULL REFERENCES budgets(id) ON DELETE CASCADE, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty DOUBLE PRECISION DEFAULT 1, unit_price DOUBLE PRECISION DEFAULT 0, notes TEXT DEFAULT '')")
+        # Placa é opcional. Corrige registros antigos que ficaram com placa vazia ('')
+        # para NULL, evitando conflito com a restrição UNIQUE da placa no PostgreSQL.
+        c.execute("UPDATE vehicles SET plate=NULL WHERE plate IS NOT NULL AND BTRIM(plate)=''")
         c.commit(); c.close(); return
     c=db(); c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT DEFAULT '', role TEXT DEFAULT 'socio', active INTEGER DEFAULT 1, created_at TEXT DEFAULT '');
@@ -342,6 +345,19 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+@app.get('/api/customers/search')
+def customers_search():
+    q=str(request.args.get('q') or '').strip()
+    if not q:
+        return jsonify([])
+    c=db()
+    rows=[dict(x) for x in c.execute(
+        "SELECT customer, MAX(phone) AS phone FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' AND LOWER(TRIM(customer)) LIKE LOWER(TRIM(?)) || '%' GROUP BY customer ORDER BY customer LIMIT 20",
+        (q,)
+    ).fetchall()]
+    c.close()
+    return jsonify(rows)
+
 @app.get('/api/vehicles/by-customer/<path:customer>')
 def vehicles_by_customer(customer):
     name=str(customer or '').strip()
@@ -366,6 +382,11 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    # Placa não é obrigatória no cadastro de cliente.
+    # Nunca grave string vazia em coluna UNIQUE: use NULL para permitir vários clientes sem placa.
+    if table == 'vehicles' and 'plate' in data:
+        plate = str(data.get('plate') or '').strip().upper()
+        data['plate'] = plate or None
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':
@@ -395,6 +416,9 @@ def update_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db(); data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    if table == 'vehicles' and 'plate' in data:
+        plate = str(data.get('plate') or '').strip().upper()
+        data['plate'] = plate or None
     old=None
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
