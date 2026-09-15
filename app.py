@@ -139,7 +139,7 @@ def audit(c, action, entity, entity_id=0, description=''):
 def init():
     if USE_POSTGRES:
         c=db()
-        c.execute('CREATE TABLE IF NOT EXISTS budget_items(id SERIAL PRIMARY KEY, budget_id INTEGER NOT NULL REFERENCES budgets(id) ON DELETE CASCADE, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty DOUBLE PRECISION DEFAULT 1, unit_price DOUBLE PRECISION DEFAULT 0, notes TEXT DEFAULT '')')
+        c.execute("CREATE TABLE IF NOT EXISTS budget_items(id SERIAL PRIMARY KEY, budget_id INTEGER NOT NULL REFERENCES budgets(id) ON DELETE CASCADE, service_id INTEGER DEFAULT 0, description TEXT NOT NULL, qty DOUBLE PRECISION DEFAULT 1, unit_price DOUBLE PRECISION DEFAULT 0, notes TEXT DEFAULT '')")
         c.commit(); c.close(); return
     c=db(); c.executescript('''
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL, name TEXT DEFAULT '', role TEXT DEFAULT 'socio', active INTEGER DEFAULT 1, created_at TEXT DEFAULT '');
