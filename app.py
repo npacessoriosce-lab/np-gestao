@@ -462,7 +462,7 @@ def apply_order_stock(c, order_id):
             qty=float(it['qty'] or 0); newqty=float(p['qty'] or 0)-qty
             c.execute('UPDATE stock SET qty=? WHERE id=?',(newqty,p['id']))
             c.execute('INSERT INTO stock_moves(date,product_id,product,move_type,qty,unit_cost,order_id,notes) VALUES(?,?,?,?,?,?,?,?)',(o['date'] or datetime.date.today().isoformat(),p['id'],p['name'],'Saída',qty,p['unit_cost'] or 0,order_id,'Consumo na OS'))
-    c.execute('UPDATE orders SET stock_applied=1 WHERE id=?',(order_id,))
+    c.execute('UPDATE orders SET stock_applied=TRUE WHERE id=?',(order_id,))
 
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
