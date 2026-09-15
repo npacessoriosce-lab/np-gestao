@@ -922,19 +922,22 @@ def report():
     c=db()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
-    # Serviços realizados: consolida por serviço usando os itens reais da OS.
-    # Assim, um serviço não aparece duplicado só porque veio de OS diferentes,
-    # nem combina vários serviços em uma única descrição.
+    # Serviços realizados: mostrar cada serviço de cada OS concluída, sem agrupar.
+    # Assim, quando uma OS é finalizada, cada item de serviço aparece separadamente
+    # no relatório. Uma OS com dois serviços gera duas linhas, mesmo que os nomes sejam iguais.
     services=[dict(x) for x in c.execute("""
-        SELECT oi.description AS service,
-               COALESCE(SUM(oi.qty),0) AS qtd,
-               COALESCE(SUM(oi.qty * oi.unit_price),0) AS total,
-               COALESCE(SUM(oi.qty * oi.unit_cost),0) AS custo
+        SELECT oi.id AS item_id,
+               oi.order_id AS order_id,
+               o.date AS date,
+               o.customer AS customer,
+               oi.description AS service,
+               COALESCE(oi.qty,0) AS qtd,
+               COALESCE(oi.qty * oi.unit_price,0) AS total,
+               COALESCE(oi.qty * oi.unit_cost,0) AS custo
         FROM order_items oi
         JOIN orders o ON o.id=oi.order_id
         WHERE oi.item_type='servico' AND o.date LIKE ? AND o.status='Concluída'
-        GROUP BY oi.description
-        ORDER BY total DESC
+        ORDER BY o.date DESC, o.id DESC, oi.id ASC
     """,(month+'%',)).fetchall()]
     method_totals={}
     method_rows=c.execute("SELECT payment,value FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)).fetchall()
