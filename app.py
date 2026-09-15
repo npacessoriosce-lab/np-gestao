@@ -922,7 +922,20 @@ def report():
     c=db()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
-    services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
+    # Serviços realizados: consolida por serviço usando os itens reais da OS.
+    # Assim, um serviço não aparece duplicado só porque veio de OS diferentes,
+    # nem combina vários serviços em uma única descrição.
+    services=[dict(x) for x in c.execute("""
+        SELECT oi.description AS service,
+               COALESCE(SUM(oi.qty),0) AS qtd,
+               COALESCE(SUM(oi.qty * oi.unit_price),0) AS total,
+               COALESCE(SUM(oi.qty * oi.unit_cost),0) AS custo
+        FROM order_items oi
+        JOIN orders o ON o.id=oi.order_id
+        WHERE oi.item_type='servico' AND o.date LIKE ? AND o.status='Concluída'
+        GROUP BY oi.description
+        ORDER BY total DESC
+    """,(month+'%',)).fetchall()]
     method_totals={}
     method_rows=c.execute("SELECT payment,value FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)).fetchall()
     for mr in method_rows:
