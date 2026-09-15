@@ -136,7 +136,19 @@ async function editRow(t,id,row){
           <input data-key="discount" type="number" step="0.01" min="0" value="${Number(row.discount||0).toFixed(2)}" style="width:100%;margin-top:5px" oninput="updateEditPaymentSummary()">
         </label>
         <label style="display:block;margin:8px 0;font-size:13px;font-weight:700">Forma de pagamento
-          <input data-key="payment" type="text" value="${esc(method)}" placeholder="Ex.: Pix, Dinheiro, Cartão" style="width:100%;margin-top:5px">
+          <select data-key="payment" style="width:100%;margin-top:5px">
+            <option value="">Não informado</option>
+            <option>Pix</option>
+            <option>Dinheiro</option>
+            <option>Cartão de débito</option>
+            <option>Cartão de crédito</option>
+            <option>Transferência bancária</option>
+            <option>Boleto</option>
+            <option>Cheque</option>
+            <option>Mercado Pago</option>
+            <option>Link de pagamento</option>
+            <option>Outro</option>
+          </select>
         </label>
         <label style="display:block;margin:8px 0;font-size:13px;font-weight:700">Valor pago
           <input id="editPaidValue" type="number" step="0.01" min="0" value="${paid.toFixed(2)}" style="width:100%;margin-top:5px" oninput="updateEditPaymentSummary()">
@@ -144,8 +156,21 @@ async function editRow(t,id,row){
         <div id="editPaymentSummary" style="margin-top:12px;padding:10px;border-radius:8px;background:#fff;border:1px solid #eee"></div>
         <div style="font-size:12px;color:#777;margin-top:8px">O valor pago é informativo nesta edição. Para registrar/alterar recebimentos, use <b>Receber / Concluir</b>.</div>
       </div>`;
-    let otherKeys=Object.keys(row).filter(k=>!['id','created_at','stock_applied','value','discount','payment','customer'].includes(k));
+    let otherKeys=Object.keys(row).filter(k=>!['id','created_at','stock_applied','value','discount','payment','customer','status','service'].includes(k));
+    editFields.innerHTML+=`
+      <label style="display:block;margin:8px 0;font-size:13px;font-weight:700">Serviço
+        <select data-key="service" style="width:100%;margin-top:5px">
+          <option value="">Selecione o serviço</option>
+          ${serviceRows.map(x=>`<option value="${esc(x.name)}">${esc(x.name)}</option>`).join('')}
+        </select>
+      </label>
+      <label style="display:block;margin:8px 0;font-size:13px;font-weight:700">Status do pedido
+        <select data-key="status" style="width:100%;margin-top:5px">
+          <option>Aberta</option><option>Em andamento</option><option>Concluída</option><option>Cancelada</option>
+        </select>
+      </label>`;
     editFields.innerHTML+=otherKeys.map(k=>{let val=row[k]??'';let type=['price','cost','unit_cost','qty','min_qty','km','total'].includes(k)?'number':k==='date'||k==='delivery_date'?'date':k==='time'?'time':'text';return `<label style="display:block;margin:8px 0;font-size:13px;font-weight:700">${esc(labels[k]||k)}${k==='notes'?`<textarea data-key="${k}" style="width:100%;margin-top:5px;min-height:120px">${esc(val)}</textarea>`:`<input data-key="${k}" type="${type}" step="0.01" value="${esc(val)}" style="width:100%;margin-top:5px">`}</label>`}).join('');
+    let ps=editFields.querySelector('[data-key="payment"]');if(ps)ps.value=method;let ss=editFields.querySelector('[data-key="status"]');if(ss)ss.value=row.status||'Aberta';let svc=editFields.querySelector('[data-key="service"]');if(svc){svc.value=row.service||'';if(!svc.value&&row.service)svc.insertAdjacentHTML('beforeend',`<option value="${esc(row.service)}">${esc(row.service)}</option>`);svc.value=row.service||'';}
     updateEditPaymentSummary();editModal.classList.remove('hidden');return;
   }
   let keys=Object.keys(row).filter(k=>!['id','created_at','stock_applied'].includes(k) && !(t==='orders'&&k==='customer'));editFields.innerHTML=keys.map(k=>{let val=row[k]??'';let type=['price','cost','value','unit_cost','qty','min_qty','km','discount','total'].includes(k)?'number':k==='date'||k==='delivery_date'?'date':k==='time'?'time':'text';return `<label style="display:block;margin:8px 0;font-size:13px;font-weight:700">${esc(labels[k]||k)}${t==='services'&&k==='notes'?`<textarea data-key="${k}" style="width:100%;margin-top:5px;min-height:120px">${esc(val)}</textarea>`:`<input data-key="${k}" type="${type}" step="0.01" value="${esc(val)}" style="width:100%;margin-top:5px">`}</label>`}).join('');editModal.classList.remove('hidden')}
