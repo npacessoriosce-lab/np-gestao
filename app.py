@@ -466,6 +466,76 @@ def lookup():
         return jsonify(data=data.get('data',data))
     except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
 
+@app.post('/api/orders/create-complete')
+def create_order_complete():
+    """Create an OS with its selected services and optional payments in one transaction.
+    Customer and date are required; plate is optional.
+    """
+    d=request.json or {}
+    customer=str(d.get('customer') or '').strip()
+    date=str(d.get('date') or '').strip()
+    plate=normalize_plate(d.get('plate') or '')
+    if not customer: return jsonify(error='Informe o nome do cliente.'),400
+    if not date: return jsonify(error='Informe a data da OS.'),400
+    services=d.get('services') or []
+    if not services: return jsonify(error='Adicione pelo menos um serviço à OS.'),400
+    try:
+        value=sum(float(x.get('price') or 0) for x in services)
+        cost=sum(float(x.get('cost') or 0) for x in services)
+        discount=max(0.0,float(d.get('discount') or 0))
+        if discount>value: discount=value
+        status=str(d.get('status') or 'Aberta')
+        payment=str(d.get('payment') or '')
+        notes=str(d.get('notes') or '')
+        km=float(d.get('km') or 0)
+        delivery_date=str(d.get('delivery_date') or '')
+        created_at=str(d.get('created_at') or datetime.datetime.now().isoformat(timespec='seconds'))
+        c=db()
+        cur=c.execute(
+            "INSERT INTO orders(date,customer,plate,service,value,cost,status,km,delivery_date,discount,payment,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (date,customer,plate,value,cost,status,km,delivery_date,discount,payment,notes,created_at)
+        )
+        order_id=cur.lastrowid
+        if not order_id:
+            row=c.execute('SELECT id FROM orders WHERE customer=? AND date=? ORDER BY id DESC LIMIT 1',(customer,date)).fetchone()
+            order_id=row['id'] if row else None
+        if not order_id:
+            raise RuntimeError('Não foi possível obter o número da OS criada.')
+        service_names=[]
+        for item in services:
+            name=str(item.get('name') or 'Serviço').strip()
+            price=float(item.get('price') or 0)
+            item_cost=float(item.get('cost') or 0)
+            item_id=int(item.get('item_id') or 0)
+            item_notes=str(item.get('notes') or '')
+            c.execute(
+                "INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)",
+                (order_id,'servico',item_id,name,1,price,item_cost,item_notes)
+            )
+            service_names.append(name)
+        # Keep the main OS service field useful for reports/history.
+        if service_names:
+            c.execute('UPDATE orders SET service=? WHERE id=?',(', '.join(service_names),order_id))
+        payments=d.get('payments') or []
+        for pay in payments:
+            method=str(pay.get('payment') or '').strip()
+            try: pvalue=float(pay.get('value') or 0)
+            except: pvalue=0.0
+            if method and pvalue>0:
+                c.execute(
+                    "INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)",
+                    (order_id,date,method,pvalue,str(pay.get('notes') or ''))
+                )
+        if status=='Concluída':
+            apply_order_stock(c,order_id)
+        c.commit(); c.close()
+        return jsonify(id=order_id,ok=True)
+    except Exception as e:
+        try: c.rollback(); c.close()
+        except Exception: pass
+        app.logger.exception('Erro ao criar OS completa')
+        return jsonify(error=f'Não foi possível criar a OS: {e}'),500
+
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
     c=db(); r=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone(); c.close()
