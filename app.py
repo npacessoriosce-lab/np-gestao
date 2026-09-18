@@ -464,7 +464,7 @@ def register_order_finance(c, order_id, payments=None):
             normalized.append((pay,val,notes))
     # Remove only this OS's previous incoming entries, then rebuild from source of truth.
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
-    today=datetime.date.today().isoformat()
+    today=str(o['date'] or datetime.date.today().isoformat())
     for pay,val,notes in normalized:
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
@@ -565,17 +565,23 @@ def create_order_complete():
                     (order_id,date,method,pvalue,str(pay.get('notes') or ''))
                 )
 
+        valid=[]
+        for pay in payments:
+            if not isinstance(pay,dict): continue
+            method=str(pay.get('payment') or '').strip()
+            try: pvalue=float(pay.get('value') or 0)
+            except Exception: pvalue=0.0
+            if method and pvalue>0: valid.append((method,pvalue,str(pay.get('notes') or '')))
+
+        # Se houve pagamento informado na criação da OS, ele já entra no
+        # Financeiro imediatamente, mesmo que a OS ainda esteja Aberta.
+        # Ao concluir/editar a OS, register_order_finance remove as entradas
+        # anteriores desta OS e reconstrói pelos pagamentos atuais, evitando duplicidade.
+        if valid:
+            register_order_finance(c,order_id,valid)
+
         if status=='Concluída':
             apply_order_stock(c,order_id)
-            valid=[]
-            for pay in payments:
-                if not isinstance(pay,dict): continue
-                method=str(pay.get('payment') or '').strip()
-                try: pvalue=float(pay.get('value') or 0)
-                except Exception: pvalue=0.0
-                if method and pvalue>0: valid.append((method,pvalue,str(pay.get('notes') or '')))
-            if valid:
-                register_order_finance(c,order_id,valid)
 
         c.commit()
         c.close()
