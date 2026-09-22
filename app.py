@@ -92,38 +92,8 @@ def db():
         return PGConn(psycopg.connect(DATABASE_URL))
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
 
-def get_token():
-    # O token fica no banco, para não desaparecer quando o Render reiniciar/reimplantar.
-    try:
-        c=db()
-        row=c.execute('SELECT falcon_token FROM company WHERE id=1 LIMIT 1').fetchone()
-        c.close()
-        if row:
-            value=str(row['falcon_token'] or '').strip()
-            if value:
-                return value
-    except Exception:
-        pass
-    # Compatibilidade com versões antigas que guardavam o token em arquivo.
-    return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
-
-def set_token(t):
-    token=str(t or '').strip()
-    c=None
-    try:
-        c=db()
-        c.execute('INSERT OR IGNORE INTO company(id) VALUES(1)')
-        c.execute('UPDATE company SET falcon_token=? WHERE id=1',(token,))
-        c.commit(); c.close(); c=None
-        # Mantém o arquivo apenas como fallback para instalações antigas.
-        try: TOKEN_FILE.write_text(token,encoding='utf-8')
-        except Exception: pass
-        return
-    except Exception:
-        if c:
-            try: c.close()
-            except Exception: pass
-    TOKEN_FILE.write_text(token,encoding='utf-8')
+def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
+def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
@@ -178,14 +148,11 @@ def init():
     if USE_POSTGRES:
         c=db()
         try:
-            c.execute("CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY, fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '', falcon_token TEXT DEFAULT '')")
+            c.execute("CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY, fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '')")
             # Migração segura do logo: sem DEFAULT vazio no PostgreSQL.
             if 'logo_data' not in colnames(c,'company'):
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
-            if 'falcon_token' not in colnames(c,'company'):
-                c.execute("ALTER TABLE company ADD COLUMN falcon_token TEXT")
-                c.execute("UPDATE company SET falcon_token='' WHERE falcon_token IS NULL")
             c.commit()
         finally:
             c.close()
@@ -205,10 +172,10 @@ def init():
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS order_payments(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, date TEXT, payment TEXT NOT NULL, value REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, date TEXT, username TEXT, action TEXT, entity TEXT, entity_id INTEGER DEFAULT 0, description TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '', falcon_token TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '');
     ''')
     # migrations from V12
-    addcol(c,'company','falcon_token','TEXT',''); addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
+    addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
     addcol(c,'services','category','TEXT',''); addcol(c,'services','duration','TEXT',''); addcol(c,'services','notes','TEXT',''); addcol(c,'services','active','INTEGER','1')
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
@@ -406,6 +373,30 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+def create_followups_for_order(c, order_id):
+    o=c.execute('SELECT customer,plate,service,date FROM orders WHERE id=?',(order_id,)).fetchone()
+    if not o or not o['date']:
+        return 0
+    phone=''
+    if o['plate']:
+        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone()
+        phone=(vr['phone'] or '') if vr else ''
+    if not phone and o['customer']:
+        vr=c.execute('SELECT phone FROM vehicles WHERE customer=? AND phone IS NOT NULL AND phone!='' ORDER BY id DESC LIMIT 1',(o['customer'],)).fetchone()
+        phone=(vr['phone'] or '') if vr else ''
+    try:
+        base=datetime.date.fromisoformat(str(o['date']))
+    except Exception:
+        return 0
+    created=0
+    for days in (15,30,60):
+        due=(base+datetime.timedelta(days=days)).isoformat()
+        exists=c.execute('SELECT 1 FROM followups WHERE customer=? AND plate=? AND service_date=? AND days_after=?',(o['customer'],o['plate'],o['date'],days)).fetchone()
+        if not exists:
+            c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due))
+            created+=1
+    return created
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -522,75 +513,16 @@ def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.i
 
 @app.post('/api/vehicle/lookup')
 def lookup():
-    plate=normalize_plate((request.json or {}).get('plate',''))
-    token=get_token()
+    plate=normalize_plate((request.json or {}).get('plate','')); token=get_token()
+    if not token: return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
     if not plate: return jsonify(error='Digite a placa.'),400
-
-    # Primeiro usa um veículo já salvo no NP Gestão. Isso evita gastar consulta
-    # e permite continuar trabalhando mesmo se a API estiver instável.
-    c=None
     try:
-        c=db()
-        local=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
-        c.close(); c=None
-        if local:
-            return jsonify(data=dict(local), source='local')
-    except Exception:
-        if c:
-            try: c.close()
-            except Exception: pass
-
-    if not token:
-        return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
-
-    # Endpoint atual de consulta de placas do Falcon Data Hub.
-    # Mantemos o endpoint antigo como fallback de compatibilidade.
-    urls=[
-        f'https://datahub.falcon-server.com.br/private/v1/placas/{plate}/search',
-        f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search'
-    ]
-    headers={'Authorization':f'Bearer {token}','Accept':'application/json'}
-    last_error=None
-
-    for url in urls:
-        for attempt in range(2):
-            try:
-                r=requests.get(url,headers=headers,timeout=(8,25))
-                try: data=r.json()
-                except Exception:
-                    last_error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'
-                    break
-
-                # 404 na primeira rota pode significar incompatibilidade/placa
-                # não encontrada. Tentamos a rota anterior antes de desistir.
-                if r.status_code == 404 and url != urls[-1]:
-                    last_error=data.get('message') or data.get('error') or 'Placa não encontrada na rota atual.'
-                    break
-
-                if r.status_code>=400:
-                    return jsonify(
-                        error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',
-                        detalhes=data
-                    ),r.status_code
-
-                payload=data.get('data',data)
-                if isinstance(payload,dict):
-                    # Normaliza respostas das diferentes versões do endpoint.
-                    payload=payload.get('vehicle',payload.get('veiculo',payload))
-                return jsonify(data=payload, source='falcon')
-
-            except requests.exceptions.Timeout:
-                last_error='A Falcon demorou para responder.'
-            except requests.exceptions.RequestException as e:
-                last_error=str(e)
-            if attempt == 0:
-                import time
-                time.sleep(1.2)
-
-    return jsonify(
-        error='A Falcon não conseguiu localizar ou responder à placa. Confira a placa e tente novamente. Se preferir, você pode preencher os dados manualmente.',
-        detalhes=last_error
-    ),404
+        r=requests.get(f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',headers={'Authorization':f'Bearer {token}'},timeout=15)
+        try: data=r.json()
+        except: return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
+        if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
+        return jsonify(data=data.get('data',data))
+    except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
 
 @app.post('/api/orders/create-complete')
 def create_order_complete():
@@ -686,6 +618,25 @@ def create_order_complete():
             except Exception: pass
         app.logger.exception('Erro ao criar OS completa')
         return jsonify(error=f'Não foi possível criar a OS: {e}'),500
+
+@app.post('/api/orders/<int:order_id>/complete-service')
+def complete_service(order_id):
+    """Marca o serviço como concluído sem exigir pagamento. Não lança entrada no Financeiro."""
+    c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    if not o:
+        c.close(); return jsonify(error='OS não encontrada'),404
+    if o['status']=='Cancelada':
+        c.close(); return jsonify(error='Não é possível concluir uma OS cancelada.'),400
+    try:
+        c.execute("UPDATE orders SET status='Concluída' WHERE id=?",(order_id,))
+        apply_order_stock(c,order_id)
+        created=create_followups_for_order(c,order_id)
+        audit(c,'Concluiu serviço','orders',order_id,'Serviço concluído sem registrar pagamento')
+        c.commit(); c.close()
+        return jsonify(ok=True,followups_created=created)
+    except Exception as e:
+        c.rollback(); c.close()
+        return jsonify(error='Não foi possível concluir o serviço: '+str(e)),500
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
@@ -907,15 +858,9 @@ def budget_to_order(budget_id):
 
 @app.post('/api/followups/generate')
 def generate_followups():
-    c=db(); orders=c.execute("SELECT customer,plate,service,date FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
+    c=db(); orders=c.execute("SELECT id FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
     for o in orders:
-        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone(); phone=vr['phone'] if vr else ''
-        try: base=datetime.date.fromisoformat(o['date'])
-        except: continue
-        for days in (15,30,60):
-            due=(base+datetime.timedelta(days=days)).isoformat()
-            if not c.execute('SELECT 1 FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'],o['date'],days)).fetchone():
-                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due)); created+=1
+        created += create_followups_for_order(c,o['id'])
     c.commit(); c.close(); return jsonify(created=created)
 @app.post('/api/followups/<int:item_id>/done')
 def followup_done(item_id):
