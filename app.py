@@ -524,15 +524,11 @@ def apply_order_stock(c, order_id):
 
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
-def get_anycar_key():
-    return str(os.environ.get('ANYCAR_API_KEY') or '').strip()
-
 def normalize_vehicle_data(raw):
-    """Normaliza respostas Falcon/AnyCar para o formato usado pelo frontend."""
+    """Normaliza a resposta da Falcon para o formato usado pelo frontend."""
     if not isinstance(raw, dict):
         return {}
     data=raw.get('data') if isinstance(raw.get('data'), dict) else raw
-    # AnyCar usa anoFabricacao/anoModelo; Falcon pode usar ano/ano_modelo.
     out=dict(data)
     if not out.get('marca') and out.get('brand'): out['marca']=out.get('brand')
     if not out.get('modelo') and out.get('model'): out['modelo']=out.get('model')
@@ -542,37 +538,6 @@ def normalize_vehicle_data(raw):
     if not out.get('uf') and out.get('estado'): out['uf']=out.get('estado')
     return out
 
-def lookup_anycar(plate):
-    key=get_anycar_key()
-    if not key:
-        return None, 'AnyCar não configurada.'
-    url=f'https://api.anycar.com.br/v1/cadastral/{plate}'
-    headers={'Authorization':key,'Accept':'application/json'}
-    try:
-        r=requests.get(url,headers=headers,timeout=(5,10))
-    except requests.exceptions.Timeout:
-        return None, 'A AnyCar demorou para responder.'
-    except requests.exceptions.RequestException as e:
-        return None, f'Falha de conexão com a AnyCar: {e}'
-    try:
-        data=r.json()
-    except Exception:
-        return None, f'AnyCar retornou resposta não JSON (HTTP {r.status_code}).'
-    if r.status_code in (401,403):
-        return None, 'A API Key da AnyCar é inválida ou não tem acesso a esta consulta.'
-    if r.status_code == 404:
-        return None, 'Placa não encontrada na AnyCar.'
-    if r.status_code == 429:
-        return None, 'Limite de consultas da AnyCar atingido.'
-    if r.status_code >= 400:
-        msg=data.get('message') or data.get('error') or f'AnyCar HTTP {r.status_code}'
-        return None, msg
-    normalized=normalize_vehicle_data(data)
-    # Algumas respostas de APIs usam status HTTP 200, mas sinalizam ausência no corpo.
-    if not normalized.get('marca') and not normalized.get('modelo') and not normalized.get('ano') and not normalized.get('ano_modelo'):
-        return None, 'A AnyCar não retornou dados cadastrais para esta placa.'
-    return normalized, None
-
 @app.post('/api/vehicle/lookup')
 def lookup():
     plate=normalize_plate((request.json or {}).get('plate',''))
@@ -580,17 +545,23 @@ def lookup():
         return jsonify(error='Digite a placa.'),400
 
     # Se o veículo já estiver cadastrado, usamos os dados locais primeiro.
+    c=None
     try:
         c=db()
         local=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
         c.close()
+        c=None
         if local:
             return jsonify(data=dict(local), source='local')
     except Exception:
-        try: c.close()
+        try:
+            if c: c.close()
         except Exception: pass
 
     falcon_token=get_token()
+    if not falcon_token:
+        return jsonify(error='Token da Falcon não configurado. Configure FALCON_TOKEN no Render ou informe o token em Configurações.'),400
+
     falcon_headers={'Authorization':f'Bearer {falcon_token}','Accept':'application/json'}
     falcon_endpoints=[
         f'https://datahub.falcon-server.com.br/private/v1/placas/{plate}/search',
@@ -598,63 +569,49 @@ def lookup():
     ]
     falcon_last=''
 
-    # Falcon continua sendo a primeira fonte. Se não encontrar, estiver indisponível
-    # ou não estiver configurada, passamos para a AnyCar.
-    if falcon_token:
-        for idx,url in enumerate(falcon_endpoints):
-            try:
-                r=requests.get(url,headers=falcon_headers,timeout=(5,10))
-                try: data=r.json()
-                except Exception:
-                    falcon_last=f'Falcon respondeu HTTP {r.status_code} sem JSON.'
-                    if idx == 0: continue
-                    break
-
-                if r.status_code == 200:
-                    normalized=normalize_vehicle_data(data)
-                    if normalized:
-                        return jsonify(data=normalized, source='falcon')
-                    falcon_last='A Falcon respondeu, mas não trouxe dados cadastrais.'
-                    if idx == 0: continue
-                    break
-                if r.status_code in (404,405):
-                    falcon_last='Placa não encontrada na Falcon.'
-                    if idx == 0: continue
-                    break
-                if r.status_code in (401,403):
-                    falcon_last='Token da Falcon inválido ou sem acesso.'
-                    # Não bloqueia o usuário: tenta a AnyCar.
-                    break
-                if r.status_code == 429:
-                    falcon_last='Limite de consultas da Falcon atingido.'
-                    break
-                if r.status_code >= 500:
-                    falcon_last=f'Falcon respondeu HTTP {r.status_code}.'
-                    if idx == 0: continue
-                    break
-                falcon_last=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}'
+    for idx,url in enumerate(falcon_endpoints):
+        try:
+            r=requests.get(url,headers=falcon_headers,timeout=(5,10))
+            try: data=r.json()
+            except Exception:
+                falcon_last=f'Falcon respondeu HTTP {r.status_code} sem JSON.'
                 if idx == 0: continue
                 break
-            except requests.exceptions.Timeout:
-                falcon_last='A Falcon demorou para responder.'
+
+            if r.status_code == 200:
+                normalized=normalize_vehicle_data(data)
+                if normalized:
+                    return jsonify(data=normalized, source='falcon')
+                falcon_last='A Falcon respondeu, mas não trouxe dados cadastrais.'
                 if idx == 0: continue
-            except requests.exceptions.RequestException as e:
-                falcon_last=str(e)
+                break
+            if r.status_code == 404:
+                falcon_last='Placa não encontrada na Falcon.'
                 if idx == 0: continue
+                break
+            if r.status_code in (401,403):
+                falcon_last='Token da Falcon inválido ou sem acesso.'
+                break
+            if r.status_code == 429:
+                falcon_last='Limite de consultas da Falcon atingido.'
+                break
+            if r.status_code >= 500:
+                falcon_last=f'Falcon respondeu HTTP {r.status_code}.'
+                if idx == 0: continue
+                break
+            falcon_last=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}'
+            if idx == 0: continue
+            break
+        except requests.exceptions.Timeout:
+            falcon_last='A Falcon demorou para responder.'
+            if idx == 0: continue
+        except requests.exceptions.RequestException as e:
+            falcon_last=f'Falha de conexão com a Falcon: {e}'
+            if idx == 0: continue
 
-    # Segunda fonte: AnyCar. A chave fica somente no Environment do Render.
-    anycar_data, anycar_error=lookup_anycar(plate)
-    if anycar_data:
-        return jsonify(data=anycar_data, source='anycar')
-
-    if not falcon_token and not get_anycar_key():
-        return jsonify(error='Nenhuma consulta automática está configurada. Configure a Falcon ou a AnyCar em suas respectivas chaves.'),400
-
-    # Nenhuma fonte encontrou. Isso não bloqueia o cadastro manual.
-    details='; '.join(x for x in [falcon_last, anycar_error] if x)
     return jsonify(
-        error='Placa não encontrada nas consultas automáticas. Preencha os dados manualmente e salve o veículo.',
-        detalhes=details
+        error='Placa não encontrada na Falcon. Você pode preencher os dados manualmente e salvar o veículo.',
+        detalhes=falcon_last
     ),404
 
 @app.post('/api/orders/create-complete')
