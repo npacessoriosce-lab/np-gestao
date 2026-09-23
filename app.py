@@ -92,8 +92,15 @@ def db():
         return PGConn(psycopg.connect(DATABASE_URL))
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
 
-def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
-def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
+def get_token():
+    # Em produção (Render), o token fica no Environment como FALCON_TOKEN.
+    # O arquivo local continua como fallback para instalações locais.
+    env_token=os.environ.get('FALCON_TOKEN','').strip()
+    if env_token:
+        return env_token
+    return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
+def set_token(t):
+    TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
