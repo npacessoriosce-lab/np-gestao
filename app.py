@@ -373,30 +373,6 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
-def create_followups_for_order(c, order_id):
-    o=c.execute('SELECT customer,plate,service,date FROM orders WHERE id=?',(order_id,)).fetchone()
-    if not o or not o['date']:
-        return 0
-    phone=''
-    if o['plate']:
-        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone()
-        phone=(vr['phone'] or '') if vr else ''
-    if not phone and o['customer']:
-        vr=c.execute('SELECT phone FROM vehicles WHERE customer=? AND phone IS NOT NULL AND phone!='' ORDER BY id DESC LIMIT 1',(o['customer'],)).fetchone()
-        phone=(vr['phone'] or '') if vr else ''
-    try:
-        base=datetime.date.fromisoformat(str(o['date']))
-    except Exception:
-        return 0
-    created=0
-    for days in (15,30,60):
-        due=(base+datetime.timedelta(days=days)).isoformat()
-        exists=c.execute('SELECT 1 FROM followups WHERE customer=? AND plate=? AND service_date=? AND days_after=?',(o['customer'],o['plate'],o['date'],days)).fetchone()
-        if not exists:
-            c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due))
-            created+=1
-    return created
-
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -513,16 +489,77 @@ def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.i
 
 @app.post('/api/vehicle/lookup')
 def lookup():
-    plate=normalize_plate((request.json or {}).get('plate','')); token=get_token()
-    if not token: return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
-    if not plate: return jsonify(error='Digite a placa.'),400
+    plate=normalize_plate((request.json or {}).get('plate',''))
+    if not plate:
+        return jsonify(error='Digite a placa.'),400
+
+    # Se o veículo já estiver cadastrado, usamos os dados locais primeiro.
+    # Assim a consulta não consome a cota da Falcon desnecessariamente.
     try:
-        r=requests.get(f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',headers={'Authorization':f'Bearer {token}'},timeout=15)
-        try: data=r.json()
-        except: return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
-        if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
-        return jsonify(data=data.get('data',data))
-    except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
+        c=db()
+        local=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
+        c.close()
+        if local:
+            return jsonify(data=dict(local), source='local')
+    except Exception:
+        try: c.close()
+        except Exception: pass
+
+    token=get_token()
+    if not token:
+        return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
+
+    headers={'Authorization':f'Bearer {token}','Accept':'application/json'}
+    endpoints=[
+        # Endpoint atual específico de placas da Falcon.
+        f'https://datahub.falcon-server.com.br/private/v1/placas/{plate}/search',
+        # Fallback para o endpoint legado documentado pela própria Falcon.
+        f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',
+    ]
+    last_error=''
+
+    for idx,url in enumerate(endpoints):
+        try:
+            r=requests.get(url,headers=headers,timeout=(6,12))
+            try:
+                data=r.json()
+            except Exception:
+                if r.status_code >= 500 and idx == 0:
+                    last_error=f'Falcon respondeu HTTP {r.status_code} sem JSON.'
+                    continue
+                return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
+
+            if r.status_code == 401:
+                return jsonify(error='Token da Falcon inválido ou expirado.'),401
+            if r.status_code == 403:
+                return jsonify(error='A Falcon recusou o acesso deste token.'),403
+            if r.status_code == 404:
+                return jsonify(error='Placa não encontrada na Falcon.',detalhes=data),404
+            if r.status_code == 429:
+                return jsonify(error='Limite de consultas da Falcon atingido. Tente novamente mais tarde.',detalhes=data),429
+            if r.status_code >= 500:
+                last_error=f'Falcon respondeu HTTP {r.status_code}.'
+                if idx == 0:
+                    continue
+                return jsonify(error='A Falcon está indisponível no momento. Você pode preencher os dados manualmente e salvar o veículo.',detalhes=data),502
+            if r.status_code >= 400:
+                return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
+
+            return jsonify(data=data.get('data',data), source='falcon')
+
+        except requests.exceptions.Timeout:
+            last_error='Tempo de resposta da Falcon esgotado.'
+            if idx == 0:
+                continue
+        except requests.exceptions.RequestException as e:
+            last_error=str(e)
+            if idx == 0:
+                continue
+
+    return jsonify(
+        error='Não foi possível consultar a Falcon agora. Tente novamente em alguns instantes ou preencha os dados do veículo manualmente.',
+        detalhes=last_error
+    ),504
 
 @app.post('/api/orders/create-complete')
 def create_order_complete():
@@ -618,25 +655,6 @@ def create_order_complete():
             except Exception: pass
         app.logger.exception('Erro ao criar OS completa')
         return jsonify(error=f'Não foi possível criar a OS: {e}'),500
-
-@app.post('/api/orders/<int:order_id>/complete-service')
-def complete_service(order_id):
-    """Marca o serviço como concluído sem exigir pagamento. Não lança entrada no Financeiro."""
-    c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
-    if not o:
-        c.close(); return jsonify(error='OS não encontrada'),404
-    if o['status']=='Cancelada':
-        c.close(); return jsonify(error='Não é possível concluir uma OS cancelada.'),400
-    try:
-        c.execute("UPDATE orders SET status='Concluída' WHERE id=?",(order_id,))
-        apply_order_stock(c,order_id)
-        created=create_followups_for_order(c,order_id)
-        audit(c,'Concluiu serviço','orders',order_id,'Serviço concluído sem registrar pagamento')
-        c.commit(); c.close()
-        return jsonify(ok=True,followups_created=created)
-    except Exception as e:
-        c.rollback(); c.close()
-        return jsonify(error='Não foi possível concluir o serviço: '+str(e)),500
 
 @app.get('/api/orders/<int:order_id>')
 def order_get(order_id):
@@ -858,9 +876,15 @@ def budget_to_order(budget_id):
 
 @app.post('/api/followups/generate')
 def generate_followups():
-    c=db(); orders=c.execute("SELECT id FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
+    c=db(); orders=c.execute("SELECT customer,plate,service,date FROM orders WHERE status='Concluída' AND date IS NOT NULL AND date!=''").fetchall(); created=0
     for o in orders:
-        created += create_followups_for_order(c,o['id'])
+        vr=c.execute('SELECT phone FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone(); phone=vr['phone'] if vr else ''
+        try: base=datetime.date.fromisoformat(o['date'])
+        except: continue
+        for days in (15,30,60):
+            due=(base+datetime.timedelta(days=days)).isoformat()
+            if not c.execute('SELECT 1 FROM followups WHERE plate=? AND service_date=? AND days_after=?',(o['plate'],o['date'],days)).fetchone():
+                c.execute("INSERT INTO followups(customer,phone,plate,service,service_date,days_after,due_date,status) VALUES(?,?,?,?,?,?,?,'Pendente')",(o['customer'],phone,o['plate'],o['service'],o['date'],days,due)); created+=1
     c.commit(); c.close(); return jsonify(created=created)
 @app.post('/api/followups/<int:item_id>/done')
 def followup_done(item_id):
