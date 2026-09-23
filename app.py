@@ -537,14 +537,19 @@ def lookup():
             if r.status_code == 403:
                 return jsonify(error='A Falcon recusou o acesso deste token.'),403
             if r.status_code == 404:
-                # O endpoint atual pode responder 404 para uma placa que não
-                # encontrou, mas o endpoint legado pode ter a informação.
-                # Por isso, no primeiro endpoint tentamos o fallback antes de
-                # informar ao usuário que a placa não foi encontrada.
+                # 404 pode significar que esta base/provedor não possui a placa.
+                # Tentamos o outro endpoint antes de concluir. Se os dois não
+                # encontrarem, retornamos HTTP 200 com found=False para que a
+                # tela não trate isso como erro e permita o cadastro manual.
                 last_error='Placa não encontrada neste endpoint.'
                 if idx == 0:
                     continue
-                return jsonify(error='Placa não encontrada na Falcon. Confira a placa ou preencha os dados manualmente.',detalhes=data),404
+                return jsonify(
+                    found=False,
+                    source='manual',
+                    data={},
+                    message='Placa não encontrada na consulta automática. Preencha os dados manualmente e salve o veículo.'
+                ),200
             if r.status_code == 429:
                 return jsonify(error='Limite de consultas da Falcon atingido. Tente novamente mais tarde.',detalhes=data),429
             if r.status_code >= 500:
