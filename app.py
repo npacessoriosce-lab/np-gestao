@@ -524,8 +524,11 @@ def lookup():
             try:
                 data=r.json()
             except Exception:
-                if r.status_code >= 500 and idx == 0:
-                    last_error=f'Falcon respondeu HTTP {r.status_code} sem JSON.'
+                # Alguns gateways podem responder HTML em um 404 mesmo quando
+                # o endpoint novo não está publicado naquela rota. Nesse caso
+                # não encerramos a consulta: seguimos para o endpoint legado.
+                if idx == 0 and r.status_code in (404, 405, 500, 502, 503, 504):
+                    last_error=f'Endpoint principal respondeu HTTP {r.status_code} sem JSON.'
                     continue
                 return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
 
@@ -534,6 +537,9 @@ def lookup():
             if r.status_code == 403:
                 return jsonify(error='A Falcon recusou o acesso deste token.'),403
             if r.status_code == 404:
+                # Se o endpoint principal retornar 404 JSON, ele está dizendo
+                # que a placa não foi encontrada. No endpoint legado, também
+                # encerramos com a mesma mensagem.
                 return jsonify(error='Placa não encontrada na Falcon.',detalhes=data),404
             if r.status_code == 429:
                 return jsonify(error='Limite de consultas da Falcon atingido. Tente novamente mais tarde.',detalhes=data),429
