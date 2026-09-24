@@ -430,6 +430,15 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    # Clientes podem ser cadastrados sem veículo/placa. Para vehicles, placa vazia vira NULL
+    # para não conflitar com a restrição UNIQUE e permitir vários veículos depois para o mesmo cliente.
+    if table == 'vehicles':
+        plate = str(data.get('plate') or '').strip().upper()
+        customer = str(data.get('customer') or '').strip()
+        if not customer:
+            c.close(); return jsonify(error='Informe o nome do cliente.'),400
+        data['customer'] = customer
+        data['plate'] = plate or None
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':
