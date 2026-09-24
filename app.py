@@ -92,15 +92,8 @@ def db():
         return PGConn(psycopg.connect(DATABASE_URL))
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute('PRAGMA foreign_keys=ON'); return c
 
-def get_token():
-    # Em produção (Render), o token fica no Environment como FALCON_TOKEN.
-    # O arquivo local continua como fallback para instalações locais.
-    env_token=os.environ.get('FALCON_TOKEN','').strip()
-    if env_token:
-        return env_token
-    return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
-def set_token(t):
-    TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
+def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
+def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
@@ -380,36 +373,6 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
-@app.get('/api/vehicles/search-customer')
-def vehicles_search_customer():
-    q=str(request.args.get('q') or '').strip()
-    if len(q) < 1:
-        return jsonify([])
-    c=db()
-    # Busca por nome sem exigir a placa. Ordena primeiro pelos nomes que começam com o texto digitado.
-    rows=[dict(x) for x in c.execute(
-        "SELECT id,customer,phone,plate,brand,model,year,color,km,uf FROM vehicles "
-        "WHERE customer IS NOT NULL AND TRIM(customer)!='' AND UPPER(customer) LIKE UPPER(?) "
-        "ORDER BY CASE WHEN UPPER(customer) LIKE UPPER(?) THEN 0 ELSE 1 END, customer COLLATE NOCASE, id DESC LIMIT 20",
-        ('%'+q+'%', q+'%')
-    ).fetchall()]
-    c.close()
-    return jsonify(rows)
-
-@app.get('/api/vehicles/by-customer')
-def vehicles_by_customer():
-    name=str(request.args.get('customer') or '').strip()
-    if not name:
-        return jsonify([])
-    c=db()
-    rows=[dict(x) for x in c.execute(
-        "SELECT id,customer,phone,plate,brand,model,year,color,km,uf FROM vehicles "
-        "WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id DESC",
-        (name,)
-    ).fetchall()]
-    c.close()
-    return jsonify(rows)
-
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -454,9 +417,6 @@ def update_item(table,item_id):
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
         sets=','.join(f'{k}=?' for k in data); c.execute(f'UPDATE {table} SET {sets} WHERE id=?',[*data.values(),item_id]); audit(c,'Editou',table,item_id,f'Registro {item_id} alterado em {table}')
-        if table=='order_items':
-            row=c.execute('SELECT order_id FROM order_items WHERE id=?',(item_id,)).fetchone()
-            if row: refresh_order_totals(c,row['order_id'])
         if table=='orders' and data.get('status')=='Concluída':
             apply_order_stock(c,item_id)
             # If the user concludes via Editar instead of the payment window,
@@ -527,95 +487,18 @@ def apply_order_stock(c, order_id):
 
 def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.isalnum())
 
-def normalize_vehicle_data(raw):
-    """Normaliza a resposta da Falcon para o formato usado pelo frontend."""
-    if not isinstance(raw, dict):
-        return {}
-    data=raw.get('data') if isinstance(raw.get('data'), dict) else raw
-    out=dict(data)
-    if not out.get('marca') and out.get('brand'): out['marca']=out.get('brand')
-    if not out.get('modelo') and out.get('model'): out['modelo']=out.get('model')
-    if not out.get('ano') and out.get('anoFabricacao'): out['ano']=out.get('anoFabricacao')
-    if not out.get('ano_modelo') and out.get('anoModelo'): out['ano_modelo']=out.get('anoModelo')
-    if not out.get('cor') and out.get('color'): out['cor']=out.get('color')
-    if not out.get('uf') and out.get('estado'): out['uf']=out.get('estado')
-    return out
-
 @app.post('/api/vehicle/lookup')
 def lookup():
-    plate=normalize_plate((request.json or {}).get('plate',''))
-    if not plate:
-        return jsonify(error='Digite a placa.'),400
-
-    # Se o veículo já estiver cadastrado, usamos os dados locais primeiro.
-    c=None
+    plate=normalize_plate((request.json or {}).get('plate','')); token=get_token()
+    if not token: return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
+    if not plate: return jsonify(error='Digite a placa.'),400
     try:
-        c=db()
-        local=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
-        c.close()
-        c=None
-        if local:
-            return jsonify(data=dict(local), source='local')
-    except Exception:
-        try:
-            if c: c.close()
-        except Exception: pass
-
-    falcon_token=get_token()
-    if not falcon_token:
-        return jsonify(error='Token da Falcon não configurado. Configure FALCON_TOKEN no Render ou informe o token em Configurações.'),400
-
-    falcon_headers={'Authorization':f'Bearer {falcon_token}','Accept':'application/json'}
-    falcon_endpoints=[
-        f'https://datahub.falcon-server.com.br/private/v1/placas/{plate}/search',
-        f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',
-    ]
-    falcon_last=''
-
-    for idx,url in enumerate(falcon_endpoints):
-        try:
-            r=requests.get(url,headers=falcon_headers,timeout=(5,10))
-            try: data=r.json()
-            except Exception:
-                falcon_last=f'Falcon respondeu HTTP {r.status_code} sem JSON.'
-                if idx == 0: continue
-                break
-
-            if r.status_code == 200:
-                normalized=normalize_vehicle_data(data)
-                if normalized:
-                    return jsonify(data=normalized, source='falcon')
-                falcon_last='A Falcon respondeu, mas não trouxe dados cadastrais.'
-                if idx == 0: continue
-                break
-            if r.status_code == 404:
-                falcon_last='Placa não encontrada na Falcon.'
-                if idx == 0: continue
-                break
-            if r.status_code in (401,403):
-                falcon_last='Token da Falcon inválido ou sem acesso.'
-                break
-            if r.status_code == 429:
-                falcon_last='Limite de consultas da Falcon atingido.'
-                break
-            if r.status_code >= 500:
-                falcon_last=f'Falcon respondeu HTTP {r.status_code}.'
-                if idx == 0: continue
-                break
-            falcon_last=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}'
-            if idx == 0: continue
-            break
-        except requests.exceptions.Timeout:
-            falcon_last='A Falcon demorou para responder.'
-            if idx == 0: continue
-        except requests.exceptions.RequestException as e:
-            falcon_last=f'Falha de conexão com a Falcon: {e}'
-            if idx == 0: continue
-
-    return jsonify(
-        error='Placa não encontrada na Falcon. Você pode preencher os dados manualmente e salvar o veículo.',
-        detalhes=falcon_last
-    ),404
+        r=requests.get(f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',headers={'Authorization':f'Bearer {token}'},timeout=15)
+        try: data=r.json()
+        except: return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
+        if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
+        return jsonify(data=data.get('data',data))
+    except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
 
 @app.post('/api/orders/create-complete')
 def create_order_complete():
@@ -718,35 +601,12 @@ def order_get(order_id):
     if not r: return jsonify(error='OS não encontrada'),404
     return jsonify(dict(r))
 
-@app.get('/api/orders/with-payment-status')
-def orders_with_payment_status():
-    c=db(); orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id DESC').fetchall()]
-    for o in orders:
-        total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0))
-        paid_row=c.execute('SELECT COALESCE(SUM(value),0) AS paid FROM order_payments WHERE order_id=?',(o['id'],)).fetchone()
-        paid=float(paid_row['paid'] or 0)
-        if paid >= total-0.01:
-            ps='Pago' if total>0 else 'Sem cobrança'
-        elif paid>0:
-            ps='Parcial'
-        else:
-            ps='Pendente'
-        o['payment_status']=ps; o['paid_amount']=paid; o['balance']=max(0.0,total-paid); o['order_total']=total
-    c.close(); return jsonify(orders)
-
-def refresh_order_totals(c, order_id):
-    """Recalcula subtotal/custo e descrição da OS a partir dos serviços registrados."""
-    rows=c.execute("SELECT description,qty,unit_price,unit_cost FROM order_items WHERE order_id=? AND item_type='servico' ORDER BY id",(order_id,)).fetchall()
-    subtotal=sum(float(r['qty'] or 0)*float(r['unit_price'] or 0) for r in rows)
-    cost=sum(float(r['qty'] or 0)*float(r['unit_cost'] or 0) for r in rows)
-    service_names=[]
-    for r in rows:
-        name=str(r['description'] or '').strip()
-        if name:
-            q=float(r['qty'] or 1)
-            service_names.append(name if abs(q-1)<0.0001 else f"{name} x{q:g}")
-    c.execute("UPDATE orders SET service=?, value=?, cost=? WHERE id=?",(', '.join(service_names),subtotal,cost,order_id))
-    return subtotal,cost,service_names
+def sync_order_services(c, order_id):
+    items=c.execute("SELECT * FROM order_items WHERE order_id=? AND item_type='servico' ORDER BY id",(order_id,)).fetchall()
+    names=[str(x['description'] or 'Serviço') for x in items]
+    total=sum(float(x['qty'] or 0)*float(x['unit_price'] or 0) for x in items)
+    cost=sum(float(x['qty'] or 0)*float(x['unit_cost'] or 0) for x in items)
+    c.execute('UPDATE orders SET service=?, value=?, cost=? WHERE id=?',(" + ".join(names),total,cost,order_id))
 
 @app.post('/api/orders/<int:order_id>/items')
 def order_item_add(order_id):
@@ -760,18 +620,27 @@ def order_item_add(order_id):
     else:
         desc=d.get('description','Serviço'); price=float(d.get('unit_price') or 0); cost=float(d.get('unit_cost') or 0)
     cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or '')))
-    refresh_order_totals(c,order_id)
+    if typ=='servico': sync_order_services(c,order_id)
     c.commit(); c.close(); return jsonify(id=cur.lastrowid)
 
 @app.delete('/api/order-items/<int:item_id>')
 def order_item_delete(item_id):
-    c=db(); row=c.execute('SELECT order_id FROM order_items WHERE id=?',(item_id,)).fetchone()
-    if not row:
-        c.close(); return jsonify(error='Item não encontrado'),404
-    order_id=row['order_id']
+    c=db(); row=c.execute('SELECT order_id,item_type FROM order_items WHERE id=?',(item_id,)).fetchone()
+    if not row: c.close(); return jsonify(error='Item não encontrado'),404
     c.execute('DELETE FROM order_items WHERE id=?',(item_id,))
-    refresh_order_totals(c,order_id)
-    c.commit(); c.close(); return jsonify(ok=True,order_id=order_id)
+    if row['item_type']=='servico': sync_order_services(c,row['order_id'])
+    c.commit(); c.close(); return jsonify(ok=True)
+
+@app.get('/api/orders/payment-statuses')
+def order_payment_statuses():
+    c=db(); orders=c.execute('SELECT id,value,discount FROM orders ORDER BY id DESC').fetchall()
+    result={}
+    for o in orders:
+        paid=c.execute("SELECT COALESCE(SUM(value),0) AS total FROM order_payments WHERE order_id=?",(o['id'],)).fetchone()['total'] or 0
+        total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+        paid=float(paid or 0)
+        result[str(o['id'])]={'paid':paid,'total':total,'status':'Pago' if paid>=total-0.01 and total>0 else ('Parcial' if paid>0.01 else 'Pendente')}
+    c.close(); return jsonify(result)
 
 @app.get('/uploads/<path:filename>')
 def uploads(filename):
