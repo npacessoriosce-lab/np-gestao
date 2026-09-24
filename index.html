@@ -117,7 +117,7 @@ async function add(t,data){try{await api('/api/'+t,{method:'POST',headers:{'Cont
 let editOrderItems=[];
 async function editRow(t,id,row){
   editTable=t;editId=id;
-  let keys=Object.keys(row).filter(k=>!['id','created_at','stock_applied'].includes(k) && !(t==='orders'&&k==='customer'));
+  let keys=Object.keys(row).filter(k=>{if(['id','created_at','stock_applied'].includes(k)) return false; if(t==='orders'&&k==='customer') return false; if(t==='vehicles'&&['fuel','type','municipality','uf','combustivel','municipio'].includes(k)) return false; return true;});
   editTitle.textContent=t==='orders'?`Editar OS #${id}`:'Editar registro';
   editFields.innerHTML=keys.map(k=>{
     let val=row[k]??'';
