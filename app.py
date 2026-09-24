@@ -373,27 +373,52 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+def normalize_customer_name(value):
+    """Normaliza nome para comparação, ignorando maiúsculas, acentos e espaços duplicados."""
+    text=' '.join(str(value or '').strip().split())
+    return ''.join(ch for ch in unicodedata.normalize('NFD', text).lower() if unicodedata.category(ch)!='Mn')
+
+def _customer_rows():
+    c=db()
+    rows=[dict(x) for x in c.execute("SELECT * FROM vehicles ORDER BY id DESC").fetchall()]
+    c.close()
+    return rows
+
 @app.get('/api/vehicles/search-customer')
 def search_customer():
     q=(request.args.get('q') or '').strip()
     if not q: return jsonify([])
-    c=db()
-    rows=[dict(x) for x in c.execute(
-        "SELECT * FROM vehicles WHERE UPPER(COALESCE(customer,'')) LIKE UPPER(?) ORDER BY customer COLLATE NOCASE ASC, id DESC LIMIT 20",
-        (f'%{q}%',)
-    ).fetchall()]
-    c.close(); return jsonify(rows)
+    nq=normalize_customer_name(q)
+    rows=[r for r in _customer_rows() if nq in normalize_customer_name(r.get('customer'))]
+    # Junta registros com o mesmo nome mesmo quando houver diferença de acento
+    # (ex.: EUNESIO / EUNÉSIO), evitando sugestões duplicadas.
+    groups={}
+    for r in rows:
+        key=normalize_customer_name(r.get('customer'))
+        if not key: continue
+        groups.setdefault(key, []).append(r)
+    out=[]
+    for key, group in groups.items():
+        # Prefere o nome com mais informação/acentuação para exibição.
+        display=max((str(r.get('customer') or '').strip() for r in group), key=lambda x:(sum(1 for ch in x if unicodedata.category(ch)=='Mn'), len(x)), default='Cliente')
+        # Retorna os veículos do grupo; se não houver placa, mantém um registro para o cliente aparecer.
+        usable=[r for r in group if str(r.get('plate') or '').strip()] or group[:1]
+        for r in usable:
+            r=dict(r); r['customer']=display; out.append(r)
+    out.sort(key=lambda r: (normalize_customer_name(r.get('customer')), -(int(r.get('id') or 0))))
+    return jsonify(out[:20])
 
 @app.get('/api/vehicles/by-customer')
 def vehicles_by_customer():
     customer=(request.args.get('customer') or '').strip()
     if not customer: return jsonify([])
-    c=db()
-    rows=[dict(x) for x in c.execute(
-        "SELECT * FROM vehicles WHERE UPPER(TRIM(COALESCE(customer,'')))=UPPER(TRIM(?)) ORDER BY id DESC",
-        (customer,)
-    ).fetchall()]
-    c.close(); return jsonify(rows)
+    nq=normalize_customer_name(customer)
+    rows=[r for r in _customer_rows() if normalize_customer_name(r.get('customer'))==nq]
+    # Para o restante do sistema, usa um único nome canônico, sem criar outro cliente
+    # por diferença de acento/maiúsculas.
+    display=max((str(r.get('customer') or '').strip() for r in rows), key=lambda x:(sum(1 for ch in x if unicodedata.category(ch)=='Mn'), len(x)), default=customer)
+    for r in rows: r['customer']=display
+    return jsonify(rows)
 
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
@@ -406,6 +431,13 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    if table=='vehicles' and 'customer' in data:
+        incoming=str(data.get('customer') or '').strip()
+        if incoming:
+            nr=normalize_customer_name(incoming)
+            existing=c.execute("SELECT customer FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' ORDER BY id LIMIT 5000").fetchall()
+            canonical=next((str(r['customer']).strip() for r in existing if normalize_customer_name(r['customer'])==nr), None)
+            if canonical: data['customer']=canonical
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':

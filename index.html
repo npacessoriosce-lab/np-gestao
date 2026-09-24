@@ -192,6 +192,7 @@ async function lookupOrderPlate(){
   }
 }
 let orderCustomerSearchTimer=null;
+function normalizeCustomerName(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().replace(/\s+/g,' ').toLowerCase()}
 async function searchOrderCustomer(){
   clearTimeout(orderCustomerSearchTimer);
   const q=(ocustomer.value||'').trim();
@@ -204,7 +205,7 @@ async function searchOrderCustomer(){
       box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
-      const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
+      const exact=rows.filter(r=>normalizeCustomerName(r.customer)===normalizeCustomerName(q));
       if(exact.length===1) applyOrderCustomer(exact[0]); else if(rows.length===1) applyOrderCustomer(rows[0]);
     }catch(e){}
   },220);
