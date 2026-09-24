@@ -454,6 +454,9 @@ def update_item(table,item_id):
     if table=='orders': old=c.execute('SELECT status,stock_applied FROM orders WHERE id=?',(item_id,)).fetchone()
     try:
         sets=','.join(f'{k}=?' for k in data); c.execute(f'UPDATE {table} SET {sets} WHERE id=?',[*data.values(),item_id]); audit(c,'Editou',table,item_id,f'Registro {item_id} alterado em {table}')
+        if table=='order_items':
+            row=c.execute('SELECT order_id FROM order_items WHERE id=?',(item_id,)).fetchone()
+            if row: refresh_order_totals(c,row['order_id'])
         if table=='orders' and data.get('status')=='Concluída':
             apply_order_stock(c,item_id)
             # If the user concludes via Editar instead of the payment window,
@@ -715,6 +718,36 @@ def order_get(order_id):
     if not r: return jsonify(error='OS não encontrada'),404
     return jsonify(dict(r))
 
+@app.get('/api/orders/with-payment-status')
+def orders_with_payment_status():
+    c=db(); orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id DESC').fetchall()]
+    for o in orders:
+        total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0))
+        paid_row=c.execute('SELECT COALESCE(SUM(value),0) AS paid FROM order_payments WHERE order_id=?',(o['id'],)).fetchone()
+        paid=float(paid_row['paid'] or 0)
+        if paid >= total-0.01:
+            ps='Pago' if total>0 else 'Sem cobrança'
+        elif paid>0:
+            ps='Parcial'
+        else:
+            ps='Pendente'
+        o['payment_status']=ps; o['paid_amount']=paid; o['balance']=max(0.0,total-paid); o['order_total']=total
+    c.close(); return jsonify(orders)
+
+def refresh_order_totals(c, order_id):
+    """Recalcula subtotal/custo e descrição da OS a partir dos serviços registrados."""
+    rows=c.execute("SELECT description,qty,unit_price,unit_cost FROM order_items WHERE order_id=? AND item_type='servico' ORDER BY id",(order_id,)).fetchall()
+    subtotal=sum(float(r['qty'] or 0)*float(r['unit_price'] or 0) for r in rows)
+    cost=sum(float(r['qty'] or 0)*float(r['unit_cost'] or 0) for r in rows)
+    service_names=[]
+    for r in rows:
+        name=str(r['description'] or '').strip()
+        if name:
+            q=float(r['qty'] or 1)
+            service_names.append(name if abs(q-1)<0.0001 else f"{name} x{q:g}")
+    c.execute("UPDATE orders SET service=?, value=?, cost=? WHERE id=?",(', '.join(service_names),subtotal,cost,order_id))
+    return subtotal,cost,service_names
+
 @app.post('/api/orders/<int:order_id>/items')
 def order_item_add(order_id):
     d=request.json or {}; c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
@@ -726,11 +759,19 @@ def order_item_add(order_id):
         desc=p['name']; price=float(d.get('unit_price') or 0); cost=float(p['unit_cost'] or 0)
     else:
         desc=d.get('description','Serviço'); price=float(d.get('unit_price') or 0); cost=float(d.get('unit_cost') or 0)
-    cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or ''))); c.commit(); c.close(); return jsonify(id=cur.lastrowid)
+    cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or '')))
+    refresh_order_totals(c,order_id)
+    c.commit(); c.close(); return jsonify(id=cur.lastrowid)
 
 @app.delete('/api/order-items/<int:item_id>')
 def order_item_delete(item_id):
-    c=db(); c.execute('DELETE FROM order_items WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
+    c=db(); row=c.execute('SELECT order_id FROM order_items WHERE id=?',(item_id,)).fetchone()
+    if not row:
+        c.close(); return jsonify(error='Item não encontrado'),404
+    order_id=row['order_id']
+    c.execute('DELETE FROM order_items WHERE id=?',(item_id,))
+    refresh_order_totals(c,order_id)
+    c.commit(); c.close(); return jsonify(ok=True,order_id=order_id)
 
 @app.get('/uploads/<path:filename>')
 def uploads(filename):
