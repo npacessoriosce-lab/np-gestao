@@ -373,6 +373,28 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+@app.get('/api/vehicles/search-customer')
+def search_customer():
+    q=(request.args.get('q') or '').strip()
+    if not q: return jsonify([])
+    c=db()
+    rows=[dict(x) for x in c.execute(
+        "SELECT * FROM vehicles WHERE UPPER(COALESCE(customer,'')) LIKE UPPER(?) ORDER BY customer COLLATE NOCASE ASC, id DESC LIMIT 20",
+        (f'%{q}%',)
+    ).fetchall()]
+    c.close(); return jsonify(rows)
+
+@app.get('/api/vehicles/by-customer')
+def vehicles_by_customer():
+    customer=(request.args.get('customer') or '').strip()
+    if not customer: return jsonify([])
+    c=db()
+    rows=[dict(x) for x in c.execute(
+        "SELECT * FROM vehicles WHERE UPPER(TRIM(COALESCE(customer,'')))=UPPER(TRIM(?)) ORDER BY id DESC",
+        (customer,)
+    ).fetchall()]
+    c.close(); return jsonify(rows)
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
