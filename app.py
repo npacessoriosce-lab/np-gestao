@@ -623,6 +623,40 @@ def order_item_add(order_id):
     if typ=='servico': sync_order_services(c,order_id)
     c.commit(); c.close(); return jsonify(id=cur.lastrowid)
 
+@app.put('/api/order-items/<int:item_id>')
+def order_item_update(item_id):
+    d=request.json or {}
+    c=db()
+    row=c.execute('SELECT * FROM order_items WHERE id=?',(item_id,)).fetchone()
+    if not row:
+        c.close(); return jsonify(error='Item não encontrado'),404
+    try:
+        sets=[]; vals=[]
+        if 'unit_price' in d:
+            price=float(d.get('unit_price') or 0)
+            if price<0: raise ValueError('Valor inválido')
+            sets.append('unit_price=?'); vals.append(price)
+        if 'qty' in d:
+            qty=float(d.get('qty') or 1)
+            if qty<=0: raise ValueError('Quantidade inválida')
+            sets.append('qty=?'); vals.append(qty)
+        if 'notes' in d:
+            sets.append('notes=?'); vals.append(str(d.get('notes') or ''))
+        if not sets:
+            c.close(); return jsonify(error='Nenhuma alteração informada'),400
+        vals.append(item_id)
+        c.execute('UPDATE order_items SET '+','.join(sets)+' WHERE id=?',vals)
+        if row['item_type']=='servico':
+            sync_order_services(c,row['order_id'])
+        audit(c,'Editou','order_items',item_id,f'Item da OS {row["order_id"]} alterado')
+        c.commit()
+        updated=c.execute('SELECT * FROM order_items WHERE id=?',(item_id,)).fetchone()
+        c.close(); return jsonify(ok=True,item=dict(updated) if updated else None)
+    except Exception as e:
+        try:c.rollback()
+        except:pass
+        c.close(); return jsonify(error=f'Não foi possível alterar o serviço: {e}'),400
+
 @app.delete('/api/order-items/<int:item_id>')
 def order_item_delete(item_id):
     c=db(); row=c.execute('SELECT order_id,item_type FROM order_items WHERE id=?',(item_id,)).fetchone()
