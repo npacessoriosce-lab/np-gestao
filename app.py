@@ -367,58 +367,57 @@ def messages_get(): return jsonify(get_messages())
 def messages_save():
     return jsonify(set_messages(request.json or {}))
 
+def _norm_customer_name(value):
+    import unicodedata
+    s=str(value or '')
+    s=unicodedata.normalize('NFD',s)
+    s=''.join(ch for ch in s if unicodedata.category(ch)!='Mn')
+    return ' '.join(s.strip().lower().split())
+
+@app.get('/api/vehicles/search-customer')
+def vehicles_search_customer():
+    q=str(request.args.get('q') or '').strip()
+    if not q:
+        return jsonify([])
+    nq=_norm_customer_name(q)
+    c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY customer COLLATE NOCASE ASC, id DESC').fetchall()]
+    c.close()
+    # Busca sem diferenciar acentos/maiúsculas e agrupa nomes equivalentes.
+    matched=[r for r in rows if nq in _norm_customer_name(r.get('customer'))]
+    groups={}
+    for r in matched:
+        key=_norm_customer_name(r.get('customer'))
+        groups.setdefault(key,[]).append(r)
+    out=[]
+    for key, items in groups.items():
+        # Usa o nome mais completo/canônico disponível.
+        canonical=max((str(x.get('customer') or '').strip() for x in items), key=len, default='Cliente')
+        for r in items:
+            r['customer']=canonical
+            out.append(r)
+    return jsonify(out[:30])
+
+@app.get('/api/vehicles/by-customer')
+def vehicles_by_customer():
+    q=str(request.args.get('customer') or '').strip()
+    if not q:
+        return jsonify([])
+    nq=_norm_customer_name(q)
+    c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
+    c.close()
+    matched=[r for r in rows if _norm_customer_name(r.get('customer'))==nq]
+    # Mantém um nome único para o cliente, mesmo se existirem cadastros antigos com/sem acento.
+    canonical=max((str(x.get('customer') or '').strip() for x in matched), key=len, default=q)
+    for r in matched: r['customer']=canonical
+    return jsonify(matched)
+
 @app.get('/api/vehicle/by-plate/<plate>')
 def vehicle_by_plate(plate):
     p=normalize_plate(plate); c=db(); r=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(p,)).fetchone(); c.close()
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
-
-def normalize_customer_name(value):
-    """Normaliza nome para comparação, ignorando maiúsculas, acentos e espaços duplicados."""
-    text=' '.join(str(value or '').strip().split())
-    return ''.join(ch for ch in unicodedata.normalize('NFD', text).lower() if unicodedata.category(ch)!='Mn')
-
-def _customer_rows():
-    c=db()
-    rows=[dict(x) for x in c.execute("SELECT * FROM vehicles ORDER BY id DESC").fetchall()]
-    c.close()
-    return rows
-
-@app.get('/api/vehicles/search-customer')
-def search_customer():
-    q=(request.args.get('q') or '').strip()
-    if not q: return jsonify([])
-    nq=normalize_customer_name(q)
-    rows=[r for r in _customer_rows() if nq in normalize_customer_name(r.get('customer'))]
-    # Junta registros com o mesmo nome mesmo quando houver diferença de acento
-    # (ex.: EUNESIO / EUNÉSIO), evitando sugestões duplicadas.
-    groups={}
-    for r in rows:
-        key=normalize_customer_name(r.get('customer'))
-        if not key: continue
-        groups.setdefault(key, []).append(r)
-    out=[]
-    for key, group in groups.items():
-        # Prefere o nome com mais informação/acentuação para exibição.
-        display=max((str(r.get('customer') or '').strip() for r in group), key=lambda x:(sum(1 for ch in x if unicodedata.category(ch)=='Mn'), len(x)), default='Cliente')
-        # Retorna os veículos do grupo; se não houver placa, mantém um registro para o cliente aparecer.
-        usable=[r for r in group if str(r.get('plate') or '').strip()] or group[:1]
-        for r in usable:
-            r=dict(r); r['customer']=display; out.append(r)
-    out.sort(key=lambda r: (normalize_customer_name(r.get('customer')), -(int(r.get('id') or 0))))
-    return jsonify(out[:20])
-
-@app.get('/api/vehicles/by-customer')
-def vehicles_by_customer():
-    customer=(request.args.get('customer') or '').strip()
-    if not customer: return jsonify([])
-    nq=normalize_customer_name(customer)
-    rows=[r for r in _customer_rows() if normalize_customer_name(r.get('customer'))==nq]
-    # Para o restante do sistema, usa um único nome canônico, sem criar outro cliente
-    # por diferença de acento/maiúsculas.
-    display=max((str(r.get('customer') or '').strip() for r in rows), key=lambda x:(sum(1 for ch in x if unicodedata.category(ch)=='Mn'), len(x)), default=customer)
-    for r in rows: r['customer']=display
-    return jsonify(rows)
 
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
@@ -431,13 +430,6 @@ def generic(table):
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
-    if table=='vehicles' and 'customer' in data:
-        incoming=str(data.get('customer') or '').strip()
-        if incoming:
-            nr=normalize_customer_name(incoming)
-            existing=c.execute("SELECT customer FROM vehicles WHERE customer IS NOT NULL AND TRIM(customer)<>'' ORDER BY id LIMIT 5000").fetchall()
-            canonical=next((str(r['customer']).strip() for r in existing if normalize_customer_name(r['customer'])==nr), None)
-            if canonical: data['customer']=canonical
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':
@@ -655,13 +647,6 @@ def order_get(order_id):
     if not r: return jsonify(error='OS não encontrada'),404
     return jsonify(dict(r))
 
-def sync_order_services(c, order_id):
-    items=c.execute("SELECT * FROM order_items WHERE order_id=? AND item_type='servico' ORDER BY id",(order_id,)).fetchall()
-    names=[str(x['description'] or 'Serviço') for x in items]
-    total=sum(float(x['qty'] or 0)*float(x['unit_price'] or 0) for x in items)
-    cost=sum(float(x['qty'] or 0)*float(x['unit_cost'] or 0) for x in items)
-    c.execute('UPDATE orders SET service=?, value=?, cost=? WHERE id=?',(" + ".join(names),total,cost,order_id))
-
 @app.post('/api/orders/<int:order_id>/items')
 def order_item_add(order_id):
     d=request.json or {}; c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
@@ -673,62 +658,11 @@ def order_item_add(order_id):
         desc=p['name']; price=float(d.get('unit_price') or 0); cost=float(p['unit_cost'] or 0)
     else:
         desc=d.get('description','Serviço'); price=float(d.get('unit_price') or 0); cost=float(d.get('unit_cost') or 0)
-    cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or '')))
-    if typ=='servico': sync_order_services(c,order_id)
-    c.commit(); c.close(); return jsonify(id=cur.lastrowid)
-
-@app.put('/api/order-items/<int:item_id>')
-def order_item_update(item_id):
-    d=request.json or {}
-    c=db()
-    row=c.execute('SELECT * FROM order_items WHERE id=?',(item_id,)).fetchone()
-    if not row:
-        c.close(); return jsonify(error='Item não encontrado'),404
-    try:
-        sets=[]; vals=[]
-        if 'unit_price' in d:
-            price=float(d.get('unit_price') or 0)
-            if price<0: raise ValueError('Valor inválido')
-            sets.append('unit_price=?'); vals.append(price)
-        if 'qty' in d:
-            qty=float(d.get('qty') or 1)
-            if qty<=0: raise ValueError('Quantidade inválida')
-            sets.append('qty=?'); vals.append(qty)
-        if 'notes' in d:
-            sets.append('notes=?'); vals.append(str(d.get('notes') or ''))
-        if not sets:
-            c.close(); return jsonify(error='Nenhuma alteração informada'),400
-        vals.append(item_id)
-        c.execute('UPDATE order_items SET '+','.join(sets)+' WHERE id=?',vals)
-        if row['item_type']=='servico':
-            sync_order_services(c,row['order_id'])
-        audit(c,'Editou','order_items',item_id,f'Item da OS {row["order_id"]} alterado')
-        c.commit()
-        updated=c.execute('SELECT * FROM order_items WHERE id=?',(item_id,)).fetchone()
-        c.close(); return jsonify(ok=True,item=dict(updated) if updated else None)
-    except Exception as e:
-        try:c.rollback()
-        except:pass
-        c.close(); return jsonify(error=f'Não foi possível alterar o serviço: {e}'),400
+    cur=c.execute('INSERT INTO order_items(order_id,item_type,item_id,description,qty,unit_price,unit_cost,notes) VALUES(?,?,?,?,?,?,?,?)',(order_id,typ,item_id,desc,qty,price,cost,str(d.get('notes') or ''))); c.commit(); c.close(); return jsonify(id=cur.lastrowid)
 
 @app.delete('/api/order-items/<int:item_id>')
 def order_item_delete(item_id):
-    c=db(); row=c.execute('SELECT order_id,item_type FROM order_items WHERE id=?',(item_id,)).fetchone()
-    if not row: c.close(); return jsonify(error='Item não encontrado'),404
-    c.execute('DELETE FROM order_items WHERE id=?',(item_id,))
-    if row['item_type']=='servico': sync_order_services(c,row['order_id'])
-    c.commit(); c.close(); return jsonify(ok=True)
-
-@app.get('/api/orders/payment-statuses')
-def order_payment_statuses():
-    c=db(); orders=c.execute('SELECT id,value,discount FROM orders ORDER BY id DESC').fetchall()
-    result={}
-    for o in orders:
-        paid=c.execute("SELECT COALESCE(SUM(value),0) AS total FROM order_payments WHERE order_id=?",(o['id'],)).fetchone()['total'] or 0
-        total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
-        paid=float(paid or 0)
-        result[str(o['id'])]={'paid':paid,'total':total,'status':'Pago' if paid>=total-0.01 and total>0 else ('Parcial' if paid>0.01 else 'Pendente')}
-    c.close(); return jsonify(result)
+    c=db(); c.execute('DELETE FROM order_items WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
 
 @app.get('/uploads/<path:filename>')
 def uploads(filename):
