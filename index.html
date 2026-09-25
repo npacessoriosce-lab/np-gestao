@@ -353,7 +353,9 @@ async function lookupOrderPlate(){
   }
 }
 let orderCustomerSearchTimer=null;
+let orderCustomerSelectionLock=false;
 async function searchOrderCustomer(){
+  orderCustomerSelectionLock=false;
   clearTimeout(orderCustomerSearchTimer);
   const q=(ocustomer.value||'').trim();
   if(!q){ hideOrderCustomerSuggestions(); return; }
@@ -364,13 +366,11 @@ async function searchOrderCustomer(){
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
       box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
-      // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
-      const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
-      if(exact.length===1) applyOrderCustomer(exact[0]); else if(rows.length===1) applyOrderCustomer(rows[0]);
     }catch(e){}
   },220);
 }
 async function resolveOrderCustomer(){
+  if(orderCustomerSelectionLock){ orderCustomerSelectionLock=false; return; }
   const q=(ocustomer.value||'').trim();
   if(!q)return;
   try{
@@ -394,6 +394,7 @@ function showOrderCustomerChoices(rows){
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
+  orderCustomerSelectionLock=true;
   try{
     const rows=await api('/api/vehicles/by-customer?customer='+encodeURIComponent(ocustomer.value.trim()));
     const v=rows.find(x=>Number(x.id)===Number(id));
