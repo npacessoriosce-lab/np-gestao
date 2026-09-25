@@ -99,7 +99,53 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
 @media(max-width:900px){#orders.orderPage .orderGrid{grid-template-columns:1fr 1fr}#orders.orderPage .orderCustomerField{grid-column:1/-1}#orders.orderPage .orderPlateBtn{width:100%}#orders.orderPage .orderVehicleGrid{grid-template-columns:1fr}#orders.orderPage .orderServiceAdd{grid-template-columns:1fr 190px}#orders.orderPage .orderSmallGrid{grid-template-columns:1fr 1fr}#orders.orderPage .orderSmallGrid .orderField:last-child{grid-column:1/-1}}
 @media(max-width:600px){#orders.orderPage .orderCreate{padding:14px;border-radius:14px}#orders.orderPage .orderSectionHead{align-items:flex-start}#orders.orderPage .orderDate{margin-left:0;display:block}.orderDate span{display:block;margin-bottom:5px}#orders.orderPage .orderDate input{width:100%}#orders.orderPage .orderGrid,#orders.orderPage .orderServiceAdd,#orders.orderPage .orderSmallGrid,#orders.orderPage .orderTotals{grid-template-columns:1fr}#orders.orderPage .orderTotals>div{border-right:0;border-bottom:1px solid #edf0f3}#orders.orderPage .orderTotals>div:last-child{border-bottom:0}#orders.orderPage .orderActions{flex-direction:column-reverse}#orders.orderPage .orderActions button{width:100%}}
 </style>
-</head><body><header><div>NP <span>GESTÃO AUTOMOTIVA</span></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão Automotiva</div></div></div><div class="wrap"><nav>
+<style id="os-final-polish">
+/* OS: visual only. Financeiro and other sections are intentionally untouched. */
+#orders.orderPage .orderCreate{padding:16px 18px!important;border-radius:16px!important}
+#orders.orderPage .orderSectionHead{gap:10px;padding:2px 0 9px;margin-bottom:9px!important}
+#orders.orderPage .orderSectionHead.compact{margin-top:15px!important}
+#orders.orderPage .orderSectionHead h3{font-size:17px!important}
+#orders.orderPage .orderSectionHead p{font-size:11.5px!important;margin-top:2px!important}
+#orders.orderPage .orderStep{width:30px!important;height:30px!important;min-width:30px!important;font-size:14px!important}
+#orders.orderPage .orderGrid,#orders.orderPage .orderVehicleGrid,#orders.orderPage .orderServiceAdd,#orders.orderPage .orderSmallGrid{gap:9px!important}
+#orders.orderPage .orderField label{font-size:12px!important;margin-bottom:4px!important}
+#orders.orderPage .orderField input,#orders.orderPage .orderField select,#orders.orderPage .orderField textarea,#orders.orderPage .customerPicker input{min-height:42px!important;padding:9px 11px!important;border-radius:9px!important}
+#orders.orderPage .orderVehicleInfo{min-height:74px!important;padding:11px 13px!important;border-radius:10px!important}
+#orders.orderPage .orderServicesList{padding:8px 12px!important;border-radius:10px!important}
+#orders.orderPage .orderTotals{margin-top:9px!important;border-radius:12px!important}
+#orders.orderPage .orderTotals>div{padding:11px 13px!important}
+#orders.orderPage .orderPaymentBuilder{padding:10px 12px!important;border-radius:11px!important}
+#orders.orderPage .orderNotes{margin-top:10px!important}
+#orders.orderPage .orderActions{margin-top:12px!important;padding-top:10px!important}
+#orders.orderPage .orderSave{min-height:46px!important;padding:10px 22px!important}
+#orders.orderPage .customerSuggestions{z-index:9999!important;max-height:230px!important}
+#orders.orderPage .customerSuggestion{min-height:50px!important;padding:10px 12px!important;cursor:pointer!important;touch-action:manipulation!important}
+
+/* Lista de OS: cards compactos, sem tabela espremida. */
+#orders.orderPage .ordersListClean{display:grid;gap:9px}
+#orders.orderPage .osCard{background:#fff;border:1px solid #e3e7ec;border-radius:13px;padding:12px 14px;box-shadow:0 2px 8px rgba(15,23,42,.04)}
+#orders.orderPage .osTop{display:grid;grid-template-columns:minmax(180px,1.15fr) minmax(230px,1.45fr) minmax(180px,1fr) auto;gap:12px;align-items:center}
+#orders.orderPage .osIdentity,#orders.orderPage .osVehicle,#orders.orderPage .osService{min-width:0}
+#orders.orderPage .osNumber{font-weight:800;font-size:15px;color:#111827;margin-right:7px}
+#orders.orderPage .osStatus{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:#eef2f7;color:#475569}
+#orders.orderPage .osStatus.done{background:#e7f7ed;color:#16834a}
+#orders.orderPage .osStatus.progress{background:#fff4d8;color:#9a6700}
+#orders.orderPage .osStatus.cancel{background:#fdecec;color:#c62828}
+#orders.orderPage .osCustomer{font-size:15px;font-weight:800;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#orders.orderPage .osMeta{font-size:11.5px;color:#64748b;margin-top:4px;line-height:1.35}
+#orders.orderPage .osVehicle strong,#orders.orderPage .osService strong{font-size:12.5px;color:#111827}
+#orders.orderPage .osServiceText{font-size:11.5px;color:#475569;margin-top:4px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+#orders.orderPage .osValue{text-align:right;white-space:nowrap}
+#orders.orderPage .osValueLabel{font-size:10.5px;color:#64748b}
+#orders.orderPage .osValue strong{display:block;font-size:18px;color:#111827;margin-top:2px}
+#orders.orderPage .osActions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;margin-top:10px;padding-top:9px;border-top:1px solid #eef1f4}
+#orders.orderPage .osActions .small{min-height:34px!important;padding:7px 10px!important;font-size:11px!important;border-radius:8px!important}
+#orders.orderPage .osDetails{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid #f0f2f5;color:#64748b;font-size:11px}
+#orders.orderPage .osDetails span{white-space:nowrap}
+#orders.orderPage .osFilterCard{margin-bottom:10px!important}
+@media(max-width:900px){#orders.orderPage .osTop{grid-template-columns:1fr 1fr}.osValue{text-align:left!important}.osActions{justify-content:flex-start!important}}
+@media(max-width:600px){#orders.orderPage .osTop{grid-template-columns:1fr}.osCard{padding:11px!important}.osActions .small{flex:1 1 auto}}
+</style></head><body><header><div>NP <span>GESTÃO AUTOMOTIVA</span></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão Automotiva</div></div></div><div class="wrap"><nav>
 <div class="tab on" onclick="show('dash',this)">📊 Dashboard</div><div class="tab" onclick="show('vehicles',this)">🚗 Clientes / Veículos</div><div class="tab" onclick="show('appointments',this)">📅 Agenda</div><div class="tab" onclick="show('budgets',this)">💬 Orçamentos</div><div class="tab" onclick="show('orders',this)">📋 Ordens de Serviço</div><div class="tab" onclick="show('stock',this)">📦 Estoque</div><div class="tab" onclick="show('finance',this)">💰 Financeiro</div><div class="tab" onclick="show('services',this)">🔧 Serviços</div><div class="tab" onclick="show('followups',this)">🔔 Pós-venda</div><div class="tab" onclick="show('reports',this)">📈 Relatórios</div><div class="tab" onclick="show('config',this)">⚙ Configurações</div>
 <div class="mobileMore" onclick="toggleMobileMenu()"><strong>☰</strong><span>Mais</span></div>
 </nav>
@@ -154,7 +200,7 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
 </div>
 
 <div class="card help" style="margin-bottom:14px">Na OS, informe o <b>nome do cliente</b> ou a <b>placa</b>. Ao digitar um cliente já cadastrado, o sistema localiza automaticamente a placa e os dados do veículo; se houver mais de um veículo, você escolhe qual usar. A placa é opcional para criar a OS. Adicione <b>quantos serviços quiser</b>. Para cada serviço, você pode <b>alterar o valor cobrado somente nesta OS</b> sem mudar o preço cadastrado no catálogo. Use <b>Itens / Produtos</b> para registrar materiais consumidos. O campo de pagamento é opcional no cadastro; para receber, use <b>Receber / Concluir</b>, onde é possível dividir o pagamento. Ao confirmar, o estoque e o financeiro são atualizados automaticamente.</div>
-<div class="card" style="margin-bottom:14px"><b>🔎 Filtros das OS</b><div class="form" style="padding:0;box-shadow:none;margin-top:10px"><input id="orderFilterId" placeholder="Nº da OS" oninput="applyOrderFilters()"><select id="orderFilterStatus" onchange="applyOrderFilters()"><option value="">Todos os status</option><option>Aberta</option><option>Em andamento</option><option>Concluída</option><option>Cancelada</option></select><select id="orderFilterPayment" onchange="applyOrderFilters()"><option value="">Todos os pagamentos</option><option>Pendente</option><option>Parcial</option><option>Pago</option></select><button type="button" class="small secondary" onclick="clearOrderFilters()">Limpar filtros</button></div></div><div id="ordersList"></div></section>
+<div class="card osFilterCard"><b>🔎 Filtros das OS</b><div class="form" style="padding:0;box-shadow:none;margin-top:10px"><input id="orderFilterId" placeholder="Nº da OS" oninput="applyOrderFilters()"><select id="orderFilterStatus" onchange="applyOrderFilters()"><option value="">Todos os status</option><option>Aberta</option><option>Em andamento</option><option>Concluída</option><option>Cancelada</option></select><select id="orderFilterPayment" onchange="applyOrderFilters()"><option value="">Todos os pagamentos</option><option>Pendente</option><option>Parcial</option><option>Pago</option></select><button type="button" class="small secondary" onclick="clearOrderFilters()">Limpar filtros</button></div></div><div id="ordersList"></div></section>
 <section id="stock" class="hidden section"><h2>📦 Estoque</h2><div class="card help" style="margin-bottom:12px"><b>Controle simples e realista:</b> cadastre o produto como você compra (galão, frasco, caixa, litro etc.). Use <b>Entrada/Consumo</b> quando precisar ajustar o estoque e informe o motivo. O sistema mantém o histórico das movimentações.</div><div class="form"><input id="sname" placeholder="Produto"><input id="sqty" type="number" step=".01" placeholder="Quantidade inicial"><input id="scost" type="number" step=".01" placeholder="Valor de custo"><input id="smin" type="number" step=".01" placeholder="Estoque mínimo"><select id="sunit"><option>un</option><option>galão</option><option>frasco</option><option>caixa</option><option>L</option><option>ml</option><option>kg</option><option>outro</option></select><input id="ssupplier" placeholder="Fornecedor"><button onclick="add('stock',{name:sname.value,qty:+sqty.value||0,unit_cost:+scost.value||0,min_qty:+smin.value||0,unit:sunit.value||'un',supplier:ssupplier.value})">Adicionar produto</button></div><div id="stockList"></div></section>
 <section id="finance" class="hidden section"><div class="financeHead"><div><h2 style="margin-bottom:4px">💰 Financeiro</h2><div class="help">Controle de entradas, despesas e contas fixas da sua empresa.</div></div></div><div id="financeSummary" class="financeCards"></div><div class="financeTabs"><button class="financeTab active" onclick="financeView('despesas',this)">▣ Despesas</button><button class="financeTab" onclick="financeView('lancamentos',this)">＋ Lançamentos</button><button class="financeTab" onclick="financeView('fixas',this)">▦ Contas Fixas</button><button class="financeTab" onclick="financeView('relatorios',this)">▥ Relatórios</button></div><div id="financePanel"></div></section><section id="services" class="hidden section"><h2>Serviços</h2><div class="form"><input id="svname" placeholder="Nome do serviço"><input id="svprice" type="number" step=".01" placeholder="Preço de venda"><input id="svcost" type="number" step=".01" placeholder="Custo"><input id="svcat" placeholder="Categoria"><input id="svdur" placeholder="Duração"><textarea id="svnotes" class="wide" placeholder="Observações / detalhes do serviço (opcional)"></textarea><button onclick="addServiceCatalog()">Adicionar serviço</button></div><div class="card help" style="margin-bottom:12px">Cadastre aqui os detalhes que você costuma usar nesse serviço. Ao adicionar o serviço em uma OS, essa observação aparece como sugestão e pode ser alterada.</div><div id="servicesList"></div></section>
 <section id="followups" class="hidden section"><h2>🔔 Pós-venda / Retorno</h2><div class="card" style="margin-bottom:14px"><b>15 / 30 / 60 dias</b><br><span class="help">Conclua as OS e clique em atualizar. O sistema cria os retornos e permite abrir o WhatsApp com a mensagem configurada.</span><div style="margin-top:12px"><button onclick="generateFollowups()">🔄 Atualizar lembretes</button></div></div><div id="followupsList"></div></section>
@@ -251,7 +297,31 @@ function closeEdit(){editModal.classList.add('hidden')}
 async function saveEdit(){let data={};document.querySelectorAll('#editFields [data-key]').forEach(x=>data[x.dataset.key]=x.value);try{await api(`/api/${editTable}/${editId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});closeEdit();load(editTable)}catch(e){alert(e.message)}}
 let ordersCache=[];let orderPaymentStatusCache={};
 async function loadOrders(){ordersCache=await api('/api/orders');orderPaymentStatusCache=await api('/api/orders/payment-statuses');applyOrderFilters()}
-function applyOrderFilters(){let id=(document.getElementById('orderFilterId')?.value||'').trim();let status=document.getElementById('orderFilterStatus')?.value||'';let pay=document.getElementById('orderFilterPayment')?.value||'';let rows=ordersCache.filter(r=>(!id||String(r.id).includes(id))&&(!status||r.status===status)&&(!pay||(orderPaymentStatusCache[String(r.id)]?.status===pay)));document.getElementById('ordersList').innerHTML=table(rows,'orders')}
+function renderOrderCards(rows){
+ const box=document.getElementById('ordersList');
+ if(!box)return;
+ if(!rows.length){box.innerHTML='<div class="card">Nenhum registro.</div>';return;}
+ const statusClass=r=>r.status==='Concluída'?'done':(r.status==='Em andamento'?'progress':(r.status==='Cancelada'?'cancel':''));
+ box.className='ordersListClean';
+ box.innerHTML=rows.map(r=>{
+   const payment=orderPaymentStatusCache[String(r.id)]?.label || r.payment || 'Pendente';
+   const vehicle=[r.brand,r.model,r.year].filter(Boolean).join(' · ') || 'Veículo não informado';
+   const service=r.service||'Serviço não informado';
+   const date=r.date||'-'; const delivery=r.delivery_date||'-';
+   const discount=money(r.discount||0); const km=r.km??0; const plate=r.plate||'-';
+   return `<article class="osCard">
+    <div class="osTop">
+      <div class="osIdentity"><div><span class="osNumber">OS #${esc(r.id)}</span><span class="osStatus ${statusClass(r)}">${esc(r.status||'Aberta')}</span></div><div class="osCustomer">${esc(r.customer||'Cliente não informado')}</div><div class="osMeta">📅 ${esc(date)} · 📞 ${esc(r.phone||'WhatsApp não informado')}</div></div>
+      <div class="osVehicle"><strong>🚗 ${esc(vehicle)}</strong><div class="osMeta">Placa: <b>${esc(plate)}</b></div></div>
+      <div class="osService"><strong>Serviço</strong><div class="osServiceText">${esc(service)}</div><div class="osMeta">💳 ${esc(payment)}</div></div>
+      <div class="osValue"><div class="osValueLabel">Valor</div><strong>${money(r.total??r.value??0)}</strong></div>
+    </div>
+    <div class="osDetails"><span>🚚 Entrega: ${esc(delivery)}</span><span>🛞 KM: ${esc(km)}</span><span>🏷 Desconto: ${discount}</span></div>
+    <div class="osActions">${actions('orders',r)}</div>
+   </article>`;
+ }).join('');
+}
+function applyOrderFilters(){let id=(document.getElementById('orderFilterId')?.value||'').trim();let status=document.getElementById('orderFilterStatus')?.value||'';let pay=document.getElementById('orderFilterPayment')?.value||'';let rows=ordersCache.filter(r=>(!id||String(r.id).includes(id))&&(!status||r.status===status)&&(!pay||(orderPaymentStatusCache[String(r.id)]?.status===pay)));renderOrderCards(rows)}
 function clearOrderFilters(){document.getElementById('orderFilterId').value='';document.getElementById('orderFilterStatus').value='';document.getElementById('orderFilterPayment').value='';applyOrderFilters()}
 async function deleteRow(t,id){if(!confirm('Tem certeza que deseja excluir este registro?'))return;try{await api(`/api/${t}/${id}`,{method:'DELETE'});load(t)}catch(e){alert(e.message)}}
 function fillServiceOptions(){if(!oservice)return;let cur=oservice.value;oservice.innerHTML='<option value="">Selecione um serviço</option>'+serviceRows.filter(x=>x.active!=0).map(x=>`<option value="${esc(x.name)}">${esc(x.name)} — ${money(x.price)}</option>`).join('');if(cur)oservice.value=cur;renderSelectedServices()}
@@ -287,7 +357,7 @@ async function searchOrderCustomer(){
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
       const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
@@ -315,7 +385,7 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
-  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
+  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
@@ -327,6 +397,14 @@ async function selectOrderCustomer(id){
 }
 function hideOrderCustomerSuggestions(){const box=document.getElementById('orderCustomerSuggestions');if(box){box.classList.add('hidden');box.innerHTML='';}}
 
+document.addEventListener('pointerdown',function(e){
+  const b=e.target.closest('#orders.orderPage .customerSuggestion');
+  if(!b)return;
+  e.preventDefault();
+  e.stopPropagation();
+  const id=Number(b.dataset.customerId);
+  if(id)selectOrderCustomer(id);
+},true);
 function paymentOptionsHtml(cls='') { return `<select class="${cls}"><option value="">Forma de pagamento</option><option>Pix</option><option>Dinheiro</option><option>Cartão de débito</option><option>Cartão de crédito</option><option>Transferência bancária</option><option>Boleto</option><option>Cheque</option><option>Mercado Pago</option><option>Link de pagamento</option><option>Outro</option></select>`; }
 function addOrderPaymentRow(prefill='', value=''){let box=document.getElementById('orderPaymentRows');if(!box)return;let row=document.createElement('div');row.className='orderPayRow';row.style.cssText='display:grid;grid-template-columns:1.2fr 1fr auto;gap:8px;align-items:center;margin:7px 0';row.innerHTML=paymentOptionsHtml('orderPayMethod').replace('>',` ${prefill?`data-prefill="${esc(prefill)}"`:''}>`).replace('<option value="">Forma de pagamento</option>',`<option value="">Forma de pagamento</option>`)+`<input class="orderPayValue" type="number" step=".01" min="0" placeholder="Valor" value="${value||''}"><button type="button" class="small danger" onclick="this.parentElement.remove()">✕</button>`;box.appendChild(row);if(prefill)row.querySelector('.orderPayMethod').value=prefill}
 function getOrderPaymentRows(){return [...document.querySelectorAll('#orderPaymentRows .orderPayRow')].map(r=>({payment:r.querySelector('.orderPayMethod').value,value:Number(r.querySelector('.orderPayValue').value)||0})).filter(x=>x.payment&&x.value>0)}
