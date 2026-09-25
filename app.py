@@ -31,7 +31,7 @@ app.config['SESSION_COOKIE_PATH']='/'
 app.config['PERMANENT_SESSION_LIFETIME']=datetime.timedelta(days=30)
 app.config['SESSION_REFRESH_EACH_REQUEST']=False
 
-TABLES={'users','vehicles','services','appointments','orders','stock','finance','followups','budgets','order_items','stock_moves','order_photos','order_payments','audit_log','company','fixed_bills'}
+TABLES={'users','vehicles','services','appointments','orders','stock','finance','followups','budgets','order_items','stock_moves','order_photos','order_payments','audit_log','company'}
 
 class CompatRow(dict):
     def __getitem__(self, key):
@@ -153,11 +153,6 @@ def init():
             if 'logo_data' not in colnames(c,'company'):
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
-            c.execute("CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0, status TEXT DEFAULT 'Pago')")
-            if 'status' not in colnames(c,'finance'):
-                c.execute("ALTER TABLE finance ADD COLUMN status TEXT DEFAULT 'Pago'")
-            c.execute("CREATE TABLE IF NOT EXISTS fixed_bills(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT DEFAULT 'Outros', due_day INTEGER DEFAULT 1, amount REAL DEFAULT 0, payment TEXT DEFAULT 'Pix', active BOOLEAN DEFAULT TRUE)")
-            c.execute("CREATE TABLE IF NOT EXISTS fixed_bill_payments(id INTEGER PRIMARY KEY, fixed_bill_id INTEGER NOT NULL, month TEXT NOT NULL, paid_date TEXT NOT NULL, amount REAL DEFAULT 0, payment TEXT DEFAULT 'Pix', finance_id INTEGER DEFAULT 0)")
             c.commit()
         finally:
             c.close()
@@ -169,7 +164,7 @@ def init():
     CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, date TEXT, time TEXT, customer TEXT, plate TEXT, service TEXT, status TEXT DEFAULT 'Agendado', phone TEXT DEFAULT '', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, service TEXT, value REAL DEFAULT 0, cost REAL DEFAULT 0, status TEXT DEFAULT 'Aberta', km REAL DEFAULT 0, delivery_date TEXT DEFAULT '', discount REAL DEFAULT 0, payment TEXT DEFAULT '', notes TEXT DEFAULT '', stock_applied INTEGER DEFAULT 0, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0, status TEXT DEFAULT 'Pago');
+    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0);
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -178,8 +173,6 @@ def init():
     CREATE TABLE IF NOT EXISTS order_payments(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, date TEXT, payment TEXT NOT NULL, value REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, date TEXT, username TEXT, action TEXT, entity TEXT, entity_id INTEGER DEFAULT 0, description TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS fixed_bills(id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT DEFAULT 'Outros', due_day INTEGER DEFAULT 1, amount REAL DEFAULT 0, payment TEXT DEFAULT 'Pix', active INTEGER DEFAULT 1);
-    CREATE TABLE IF NOT EXISTS fixed_bill_payments(id INTEGER PRIMARY KEY, fixed_bill_id INTEGER NOT NULL, month TEXT NOT NULL, paid_date TEXT NOT NULL, amount REAL DEFAULT 0, payment TEXT DEFAULT 'Pix', finance_id INTEGER DEFAULT 0);
     ''')
     # migrations from V12
     addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
@@ -187,7 +180,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -530,7 +523,7 @@ def register_order_finance(c, order_id, payments=None):
     for pay,val,notes in normalized:
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
-            "INSERT INTO finance(date,kind,description,value,payment,category,order_id,status) VALUES(?,?,?,?,?,?,?,'Pago')",
+            "INSERT INTO finance(date,kind,description,value,payment,category,order_id) VALUES(?,?,?,?,?,?,?)",
             (today,'Entrada',desc,val,pay,'Recebimento OS',order_id)
         )
     return sum(v for _,v,_ in normalized)
@@ -935,50 +928,6 @@ def audit_list():
 @app.get('/api/customer/<path:customer>/history')
 def customer_history(customer):
     c=db(); rows=[dict(x) for x in c.execute('SELECT id,date,plate,service,value,discount,status FROM orders WHERE customer=? ORDER BY date DESC,id DESC LIMIT 100',(customer,)).fetchall()]; c.close(); return jsonify(rows)
-
-@app.get('/api/fixed-bills')
-def fixed_bills():
-    month=str(request.args.get('month') or datetime.date.today().strftime('%Y-%m'))
-    c=db()
-    rows=[dict(x) for x in c.execute("SELECT * FROM fixed_bills WHERE active=1 ORDER BY due_day ASC, name COLLATE NOCASE ASC").fetchall()]
-    for r in rows:
-        pay=c.execute('SELECT * FROM fixed_bill_payments WHERE fixed_bill_id=? AND month=? ORDER BY id DESC LIMIT 1',(r['id'],month)).fetchone()
-        r['paid']=bool(pay); r['paid_amount']=float(pay['amount'] or 0) if pay else 0; r['paid_date']=pay['paid_date'] if pay else ''; r['paid_payment']=pay['payment'] if pay else ''
-    c.close(); return jsonify(rows)
-
-@app.post('/api/fixed-bills')
-def fixed_bill_create():
-    d=request.json or {}; name=str(d.get('name') or '').strip()
-    if not name: return jsonify(error='Informe o nome da conta.'),400
-    day=max(1,min(31,int(d.get('due_day') or 1))); amount=float(d.get('amount') or 0)
-    category=str(d.get('category') or 'Outros'); payment=str(d.get('payment') or 'Pix')
-    c=db(); cur=c.execute('INSERT INTO fixed_bills(name,category,due_day,amount,payment,active) VALUES(?,?,?,?,?,?)',(name,category,day,amount,payment,True if USE_POSTGRES else 1)); bid=cur.lastrowid; c.commit(); c.close(); return jsonify(id=bid)
-
-@app.put('/api/fixed-bills/<int:bill_id>')
-def fixed_bill_update(bill_id):
-    d=request.json or {}; name=str(d.get('name') or '').strip()
-    if not name: return jsonify(error='Informe o nome da conta.'),400
-    vals=(name,str(d.get('category') or 'Outros'),max(1,min(31,int(d.get('due_day') or 1))),float(d.get('amount') or 0),str(d.get('payment') or 'Pix'),bill_id)
-    c=db(); c.execute('UPDATE fixed_bills SET name=?,category=?,due_day=?,amount=?,payment=? WHERE id=?',vals); c.commit(); c.close(); return jsonify(ok=True)
-
-@app.delete('/api/fixed-bills/<int:bill_id>')
-def fixed_bill_delete(bill_id):
-    c=db(); c.execute('DELETE FROM fixed_bill_payments WHERE fixed_bill_id=?',(bill_id,)); c.execute('DELETE FROM fixed_bills WHERE id=?',(bill_id,)); c.commit(); c.close(); return jsonify(ok=True)
-
-@app.post('/api/fixed-bills/<int:bill_id>/pay')
-def fixed_bill_pay(bill_id):
-    d=request.json or {}; month=str(d.get('month') or datetime.date.today().strftime('%Y-%m')); amount=float(d.get('amount') or 0)
-    if amount<=0: return jsonify(error='Informe o valor pago.'),400
-    payment=str(d.get('payment') or 'Pix'); paid_date=str(d.get('paid_date') or datetime.date.today().isoformat())
-    c=db(); bill=c.execute('SELECT * FROM fixed_bills WHERE id=? AND active=1',(bill_id,)).fetchone()
-    if not bill: c.close(); return jsonify(error='Conta fixa não encontrada.'),404
-    old=c.execute('SELECT * FROM fixed_bill_payments WHERE fixed_bill_id=? AND month=? LIMIT 1',(bill_id,month)).fetchone()
-    if old: c.close(); return jsonify(error='Esta conta já foi paga neste mês.'),400
-    desc=f"{bill['name']} - {month}"
-    cur=c.execute("INSERT INTO finance(date,kind,description,value,payment,category,order_id,status) VALUES(?,?,?,?,?,?,0,'Pago')",(paid_date,'Saída',desc,amount,payment,bill['category'] or 'Outros'))
-    fid=cur.lastrowid
-    c.execute('INSERT INTO fixed_bill_payments(fixed_bill_id,month,paid_date,amount,payment,finance_id) VALUES(?,?,?,?,?,?)',(bill_id,month,paid_date,amount,payment,fid))
-    c.commit(); c.close(); return jsonify(ok=True,finance_id=fid)
 
 @app.get('/api/report')
 def report():
