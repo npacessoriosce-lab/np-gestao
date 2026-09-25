@@ -313,13 +313,13 @@ function renderOrderCards(rows){
    const vehicle=[r.brand,r.model,r.year].filter(Boolean).join(' · ') || 'Veículo não informado';
    const service=r.service||'Serviço não informado';
    const date=r.date||'-'; const delivery=r.delivery_date||'-';
-   const discount=money(r.discount||0); const km=r.km??0; const plate=r.plate||'-'; const finalTotal=Number(r.total??r.value??0)||0; const grossTotal=finalTotal+(Number(r.discount)||0);
+   const discountValue=Number(r.discount)||0; const discount=money(discountValue); const km=r.km??0; const plate=r.plate||'-'; const originalTotal=Number(r.total??r.value??0)||0; const finalTotal=Math.max(0, originalTotal-discountValue);
    return `<article class="osCard">
     <div class="osTop">
       <div class="osIdentity"><div><span class="osNumber">OS #${esc(r.id)}</span><span class="osStatus ${statusClass(r)}">${esc(r.status||'Aberta')}</span></div><div class="osCustomer">${esc(r.customer||'Cliente não informado')}</div><div class="osMeta">📅 ${esc(date)} · 📞 ${esc(r.phone||'WhatsApp não informado')}</div></div>
       <div class="osVehicle"><strong>🚗 ${esc(vehicle)}</strong><div class="osMeta">Placa: <b>${esc(plate)}</b></div></div>
       <div class="osService"><strong>Serviço</strong><div class="osServiceText">${esc(service)}</div><div class="osMeta">💳 ${esc(payment)}</div></div>
-      <div class="osValue"><div class="osValueLabel">Valor final</div><div class="osValueOriginal">Valor original: <b>${money(grossTotal)}</b></div><div class="osValueDiscount">Desconto: - ${discount}</div><div class="osValueFinal">Total cobrado <b>${money(finalTotal)}</b></div></div>
+      <div class="osValue"><div class="osValueLabel">Valor final</div><div class="osValueOriginal">Valor original: <b>${money(originalTotal)}</b></div><div class="osValueDiscount">Desconto: - ${discount}</div><div class="osValueFinal">Total cobrado <b>${money(finalTotal)}</b></div></div>
     </div>
     <div class="osDetails"><span>🚚 Entrega: ${esc(delivery)}</span><span>🛞 KM: ${esc(km)}</span><span>🏷 Desconto: ${discount}</span></div>
     <div class="osActions">${actions('orders',r)}</div>
