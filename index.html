@@ -384,7 +384,8 @@ async function searchOrderCustomer(){
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      window._orderCustomerChoices = new Map((rows||[]).map(r=>[String(r.id), r]));
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}" onpointerdown="event.preventDefault(); event.stopPropagation(); selectOrderCustomer(${Number(r.id)})" onclick="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Não seleciona automaticamente: o usuário deve clicar no cliente exibido.
     }catch(e){}
@@ -410,10 +411,13 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
+  window._orderCustomerChoices = new Map((rows||[]).map(r=>[String(r.id), r]));
   box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
+  const cached=window._orderCustomerChoices && window._orderCustomerChoices.get(String(id));
+  if(cached){ applyOrderCustomer(cached); return; }
   try{
     const rows=await api('/api/vehicles/by-customer?customer='+encodeURIComponent(ocustomer.value.trim()));
     const v=rows.find(x=>Number(x.id)===Number(id));
@@ -428,7 +432,7 @@ document.addEventListener('pointerdown',function(e){
   e.preventDefault();
   e.stopPropagation();
   const id=Number(b.dataset.customerId);
-  if(id)selectOrderCustomer(id);
+  if(id){ const v=window._orderCustomerChoices && window._orderCustomerChoices.get(String(id)); if(v) applyOrderCustomer(v); else selectOrderCustomer(id); }
 },true);
 function paymentOptionsHtml(cls='') { return `<select class="${cls}"><option value="">Forma de pagamento</option><option>Pix</option><option>Dinheiro</option><option>Cartão de débito</option><option>Cartão de crédito</option><option>Transferência bancária</option><option>Boleto</option><option>Cheque</option><option>Mercado Pago</option><option>Link de pagamento</option><option>Outro</option></select>`; }
 function addOrderPaymentRow(prefill='', value=''){let box=document.getElementById('orderPaymentRows');if(!box)return;let row=document.createElement('div');row.className='orderPayRow';row.style.cssText='display:grid;grid-template-columns:1.2fr 1fr auto;gap:8px;align-items:center;margin:7px 0';row.innerHTML=paymentOptionsHtml('orderPayMethod').replace('>',` ${prefill?`data-prefill="${esc(prefill)}"`:''}>`).replace('<option value="">Forma de pagamento</option>',`<option value="">Forma de pagamento</option>`)+`<input class="orderPayValue" type="number" step=".01" min="0" placeholder="Valor" value="${value||''}"><button type="button" class="small danger" onclick="this.parentElement.remove()">✕</button>`;box.appendChild(row);if(prefill)row.querySelector('.orderPayMethod').value=prefill}
