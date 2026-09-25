@@ -428,6 +428,46 @@ def generic(table):
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
         rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
+
+        # As OS guarda cliente/placa, enquanto telefone e dados do veículo
+        # ficam no cadastro de vehicles. A lista de OS precisa cruzar essas
+        # informações para mostrar os dados que já foram cadastrados, sem
+        # duplicar ou alterar nada no banco.
+        if table=='orders' and rows:
+            vehicle_rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
+
+            def _plate_key(v):
+                return normalize_plate(str(v or ''))
+
+            def _customer_key(v):
+                return _norm_customer_name(v)
+
+            by_plate={}
+            by_customer={}
+            for v in vehicle_rows:
+                pk=_plate_key(v.get('plate'))
+                if pk and pk not in by_plate:
+                    by_plate[pk]=v
+                ck=_customer_key(v.get('customer'))
+                if ck and ck not in by_customer:
+                    by_customer[ck]=v
+
+            for r in rows:
+                # Primeiro usa a placa da própria OS, que é a referência
+                # exata do veículo. Se a OS não tiver placa, usa o cadastro
+                # do cliente quando houver um veículo correspondente.
+                v=by_plate.get(_plate_key(r.get('plate'))) if r.get('plate') else None
+                if not v:
+                    v=by_customer.get(_customer_key(r.get('customer')))
+                r['vehicle_id']=v.get('id') if v else None
+                r['phone']=(v.get('phone') or '') if v else ''
+                r['brand']=(v.get('brand') or '') if v else ''
+                r['model']=(v.get('model') or '') if v else ''
+                r['year']=(v.get('year') or '') if v else ''
+                r['color']=(v.get('color') or '') if v else ''
+                r['fuel']=(v.get('fuel') or '') if v else ''
+                r['type']=(v.get('type') or '') if v else ''
+
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
