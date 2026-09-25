@@ -300,30 +300,8 @@ async function addServiceToEditedOrder(){let sel=document.getElementById('editOr
 async function removeServiceFromEditedOrder(itemId){if(!confirm('Remover este serviço da OS?'))return;try{await api('/api/order-items/'+itemId,{method:'DELETE'});await loadEditedOrderServices()}catch(e){alert(e.message)}}
 function closeEdit(){editModal.classList.add('hidden')}
 async function saveEdit(){let data={};document.querySelectorAll('#editFields [data-key]').forEach(x=>data[x.dataset.key]=x.value);try{await api(`/api/${editTable}/${editId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});closeEdit();load(editTable)}catch(e){alert(e.message)}}
-let ordersCache=[];let orderPaymentStatusCache={};let orderVehicleCache=[];
-async function loadOrders(){
-  const [orders,payments,vehicles]=await Promise.all([api('/api/orders'),api('/api/orders/payment-statuses'),api('/api/vehicles')]);
-  orderPaymentStatusCache=payments||{};
-  orderVehicleCache=Array.isArray(vehicles)?vehicles:[];
-  const normPlate=p=>String(p||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  const byPlate=new Map();
-  const byCustomer=new Map();
-  orderVehicleCache.forEach(v=>{
-    const plate=normPlate(v.plate);
-    if(plate&&!byPlate.has(plate))byPlate.set(plate,v);
-    const customer=_normCustomerClient(v.customer);
-    if(customer&&!byCustomer.has(customer))byCustomer.set(customer,v);
-  });
-  ordersCache=(orders||[]).map(r=>{
-    if(r.brand||r.model||r.year||r.color)return r;
-    const v=byPlate.get(normPlate(r.plate))||byCustomer.get(_normCustomerClient(r.customer));
-    return v?Object.assign({},r,{brand:v.brand||'',model:v.model||'',year:v.year||'',color:v.color||'',phone:r.phone||v.phone||'',km:(r.km!==undefined&&r.km!==null&&r.km!==''?r.km:(v.km||0))}):r;
-  });
-  applyOrderFilters();
-}
-function _normCustomerClient(value){
-  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().replace(/\s+/g,' ');
-}
+let ordersCache=[];let orderPaymentStatusCache={};
+async function loadOrders(){ordersCache=await api('/api/orders');orderPaymentStatusCache=await api('/api/orders/payment-statuses');applyOrderFilters()}
 function renderOrderCards(rows){
  const box=document.getElementById('ordersList');
  if(!box)return;
@@ -332,7 +310,7 @@ function renderOrderCards(rows){
  box.className='ordersListClean';
  box.innerHTML=rows.map(r=>{
    const payment=orderPaymentStatusCache[String(r.id)]?.label || r.payment || 'Pendente';
-   const vehicle=[r.brand,r.model,r.year].filter(Boolean).join(' · ') || (r.plate ? 'Dados do veículo não encontrados' : 'Veículo não informado');
+   const vehicle=[r.brand,r.model,r.year].filter(Boolean).join(' · ') || 'Veículo não informado';
    const service=r.service||'Serviço não informado';
    const date=r.date||'-'; const delivery=r.delivery_date||'-';
    const discount=money(r.discount||0); const km=r.km??0; const plate=r.plate||'-'; const finalTotal=Number(r.total??r.value??0)||0; const grossTotal=finalTotal+(Number(r.discount)||0);
@@ -384,10 +362,11 @@ async function searchOrderCustomer(){
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      window._orderCustomerChoices = new Map((rows||[]).map(r=>[String(r.id), r]));
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}" onpointerdown="event.preventDefault(); event.stopPropagation(); selectOrderCustomer(${Number(r.id)})" onclick="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
-      // Não seleciona automaticamente: o usuário deve clicar no cliente exibido.
+      // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
+      const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
+      if(exact.length===1) applyOrderCustomer(exact[0]); else if(rows.length===1) applyOrderCustomer(rows[0]);
     }catch(e){}
   },220);
 }
@@ -411,13 +390,10 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
-  window._orderCustomerChoices = new Map((rows||[]).map(r=>[String(r.id), r]));
-  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
+  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" data-customer-id="${Number(r.id)}"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
-  const cached=window._orderCustomerChoices && window._orderCustomerChoices.get(String(id));
-  if(cached){ applyOrderCustomer(cached); return; }
   try{
     const rows=await api('/api/vehicles/by-customer?customer='+encodeURIComponent(ocustomer.value.trim()));
     const v=rows.find(x=>Number(x.id)===Number(id));
@@ -432,7 +408,7 @@ document.addEventListener('pointerdown',function(e){
   e.preventDefault();
   e.stopPropagation();
   const id=Number(b.dataset.customerId);
-  if(id){ const v=window._orderCustomerChoices && window._orderCustomerChoices.get(String(id)); if(v) applyOrderCustomer(v); else selectOrderCustomer(id); }
+  if(id)selectOrderCustomer(id);
 },true);
 function paymentOptionsHtml(cls='') { return `<select class="${cls}"><option value="">Forma de pagamento</option><option>Pix</option><option>Dinheiro</option><option>Cartão de débito</option><option>Cartão de crédito</option><option>Transferência bancária</option><option>Boleto</option><option>Cheque</option><option>Mercado Pago</option><option>Link de pagamento</option><option>Outro</option></select>`; }
 function addOrderPaymentRow(prefill='', value=''){let box=document.getElementById('orderPaymentRows');if(!box)return;let row=document.createElement('div');row.className='orderPayRow';row.style.cssText='display:grid;grid-template-columns:1.2fr 1fr auto;gap:8px;align-items:center;margin:7px 0';row.innerHTML=paymentOptionsHtml('orderPayMethod').replace('>',` ${prefill?`data-prefill="${esc(prefill)}"`:''}>`).replace('<option value="">Forma de pagamento</option>',`<option value="">Forma de pagamento</option>`)+`<input class="orderPayValue" type="number" step=".01" min="0" placeholder="Valor" value="${value||''}"><button type="button" class="small danger" onclick="this.parentElement.remove()">✕</button>`;box.appendChild(row);if(prefill)row.querySelector('.orderPayMethod').value=prefill}
