@@ -153,6 +153,9 @@ def init():
             if 'logo_data' not in colnames(c,'company'):
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
+            c.execute("CREATE TABLE IF NOT EXISTS finance(id SERIAL PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value DOUBLE PRECISION DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0, status TEXT DEFAULT 'Pago')")
+            if 'status' not in colnames(c,'finance'):
+                c.execute("ALTER TABLE finance ADD COLUMN status TEXT DEFAULT 'Pago'")
             c.commit()
         finally:
             c.close()
@@ -164,7 +167,7 @@ def init():
     CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, date TEXT, time TEXT, customer TEXT, plate TEXT, service TEXT, status TEXT DEFAULT 'Agendado', phone TEXT DEFAULT '', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, service TEXT, value REAL DEFAULT 0, cost REAL DEFAULT 0, status TEXT DEFAULT 'Aberta', km REAL DEFAULT 0, delivery_date TEXT DEFAULT '', discount REAL DEFAULT 0, payment TEXT DEFAULT '', notes TEXT DEFAULT '', stock_applied INTEGER DEFAULT 0, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0, status TEXT DEFAULT 'Pago');
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -180,7 +183,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')

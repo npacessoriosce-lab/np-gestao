@@ -69,8 +69,51 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
 <button type="button" class="small secondary" onclick="addOrderPaymentRow()">＋ Adicionar forma de pagamento</button>
 </div><select id="ostatus"><option>Aberta</option><option>Em andamento</option><option>Concluída</option><option>Cancelada</option></select><input id="onotes" class="wide" placeholder="Observações"><button onclick="createOrder()">Criar OS</button></div><div class="card help" style="margin-bottom:14px">Na OS, informe o <b>nome do cliente</b> ou a <b>placa</b>. Ao digitar um cliente já cadastrado, o sistema localiza automaticamente a placa e os dados do veículo; se houver mais de um veículo, você escolhe qual usar. A placa é opcional para criar a OS. Adicione <b>quantos serviços quiser</b>. Para cada serviço, você pode <b>alterar o valor cobrado somente nesta OS</b> sem mudar o preço cadastrado no catálogo. Use <b>Itens / Produtos</b> para registrar materiais consumidos. O campo de pagamento é opcional no cadastro; para receber, use <b>Receber / Concluir</b>, onde é possível dividir o pagamento. Ao confirmar, o estoque e o financeiro são atualizados automaticamente.</div><div class="card" style="margin-bottom:14px"><b>🔎 Filtros das OS</b><div class="form" style="padding:0;box-shadow:none;margin-top:10px"><input id="orderFilterId" placeholder="Nº da OS" oninput="applyOrderFilters()"><select id="orderFilterStatus" onchange="applyOrderFilters()"><option value="">Todos os status</option><option>Aberta</option><option>Em andamento</option><option>Concluída</option><option>Cancelada</option></select><select id="orderFilterPayment" onchange="applyOrderFilters()"><option value="">Todos os pagamentos</option><option>Pendente</option><option>Parcial</option><option>Pago</option></select><button type="button" class="small secondary" onclick="clearOrderFilters()">Limpar filtros</button></div></div><div id="ordersList"></div></section>
 <section id="stock" class="hidden section"><h2>📦 Estoque</h2><div class="card help" style="margin-bottom:12px"><b>Controle simples e realista:</b> cadastre o produto como você compra (galão, frasco, caixa, litro etc.). Use <b>Entrada/Consumo</b> quando precisar ajustar o estoque e informe o motivo. O sistema mantém o histórico das movimentações.</div><div class="form"><input id="sname" placeholder="Produto"><input id="sqty" type="number" step=".01" placeholder="Quantidade inicial"><input id="scost" type="number" step=".01" placeholder="Valor de custo"><input id="smin" type="number" step=".01" placeholder="Estoque mínimo"><select id="sunit"><option>un</option><option>galão</option><option>frasco</option><option>caixa</option><option>L</option><option>ml</option><option>kg</option><option>outro</option></select><input id="ssupplier" placeholder="Fornecedor"><button onclick="add('stock',{name:sname.value,qty:+sqty.value||0,unit_cost:+scost.value||0,min_qty:+smin.value||0,unit:sunit.value||'un',supplier:ssupplier.value})">Adicionar produto</button></div><div id="stockList"></div></section>
-<section id="finance" class="hidden section"><h2>Financeiro</h2><div class="form"><input id="fdate" type="date"><select id="fkind"><option>Entrada</option><option>Saída</option></select><input id="fdesc" placeholder="Descrição"><input id="fvalue" type="number" step=".01" placeholder="Valor"><select id="fpay"><option>Pix</option><option>Dinheiro</option><option>Cartão</option><option>Transferência</option><option>Outro</option></select><input id="fcat" placeholder="Categoria"><button onclick="add('finance',{date:fdate.value,kind:fkind.value,description:fdesc.value,value:+fvalue.value||0,payment:fpay.value,category:fcat.value})">Lançar</button><div id="financeSummary" class="grid" style="margin-bottom:14px"></div></div><div id="financeList"></div></section>
-<section id="services" class="hidden section"><h2>Serviços</h2><div class="form"><input id="svname" placeholder="Nome do serviço"><input id="svprice" type="number" step=".01" placeholder="Preço de venda"><input id="svcost" type="number" step=".01" placeholder="Custo"><input id="svcat" placeholder="Categoria"><input id="svdur" placeholder="Duração"><textarea id="svnotes" class="wide" placeholder="Observações / detalhes do serviço (opcional)"></textarea><button onclick="addServiceCatalog()">Adicionar serviço</button></div><div class="card help" style="margin-bottom:12px">Cadastre aqui os detalhes que você costuma usar nesse serviço. Ao adicionar o serviço em uma OS, essa observação aparece como sugestão e pode ser alterada.</div><div id="servicesList"></div></section>
+<section id="finance" class="hidden section"><h2>💰 Financeiro</h2>
+<div class="grid" style="margin-bottom:14px">
+  <div class="card"><div style="font-weight:800">Entradas</div><div id="financeTotalEntradas" class="num">R$ 0,00</div></div>
+  <div class="card"><div style="font-weight:800">Despesas</div><div id="financeTotalDespesas" class="num">R$ 0,00</div></div>
+  <div class="card"><div style="font-weight:800">Contas Fixas Pagas</div><div id="financeTotalFixas" class="num">R$ 0,00</div></div>
+  <div class="card"><div style="font-weight:800">Saldo</div><div id="financeSaldo" class="num">R$ 0,00</div></div>
+</div>
+<div class="two" style="margin-bottom:14px">
+  <div class="card">
+    <h3 style="margin-top:0">➕ Entradas</h3>
+    <div class="form" style="padding:0;box-shadow:none;margin:0">
+      <input id="fdate" type="date">
+      <input id="fdesc" placeholder="Descrição">
+      <input id="fvalue" type="number" step=".01" placeholder="Valor">
+      <select id="fpay"><option>Pix</option><option>Dinheiro</option><option>Cartão</option><option>Transferência</option><option>Outro</option></select>
+      <button type="button" onclick="addFinanceEntry('Entrada','Entrada','Pago')">Lançar entrada</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">💸 Despesas</h3>
+    <div class="form" style="padding:0;box-shadow:none;margin:0">
+      <input id="fdateDespesa" type="date">
+      <input id="fdescDespesa" placeholder="Descrição da despesa">
+      <input id="fvalueDespesa" type="number" step=".01" placeholder="Valor">
+      <select id="fpayDespesa"><option>Pix</option><option>Dinheiro</option><option>Cartão</option><option>Transferência</option><option>Outro</option></select>
+      <button type="button" onclick="addFinanceEntry('Saída','Despesa','Pago')">Lançar despesa</button>
+    </div>
+  </div>
+</div>
+<div class="card" style="margin-bottom:14px">
+  <h3 style="margin-top:0">📅 Contas Fixas</h3>
+  <div class="form" style="padding:0;box-shadow:none;margin:0">
+    <input id="fdateFixa" type="date" title="Vencimento">
+    <input id="fdescFixa" placeholder="Ex.: Aluguel, Energia, Internet">
+    <input id="fvalueFixa" type="number" step=".01" placeholder="Valor">
+    <select id="fpayFixa"><option>Pix</option><option>Dinheiro</option><option>Cartão</option><option>Transferência</option><option>Boleto</option><option>Outro</option></select>
+    <select id="fstatusFixa"><option value="Pendente">Pendente</option><option value="Pago">Pago</option></select>
+    <button type="button" onclick="addFinanceEntry('Saída','Conta Fixa',fstatusFixa.value)">Adicionar conta fixa</button>
+  </div>
+  <div class="help" style="margin-top:8px">Contas <b>Pendentes</b> ficam registradas, mas não são descontadas do saldo até serem marcadas como <b>Pago</b>.</div>
+</div>
+<div class="card" style="margin-bottom:14px"><h3 style="margin-top:0">Entradas registradas</h3><div id="financeEntradasList"></div></div>
+<div class="card" style="margin-bottom:14px"><h3 style="margin-top:0">Despesas</h3><div id="financeDespesasList"></div></div>
+<div class="card"><h3 style="margin-top:0">Contas Fixas</h3><div id="financeFixasList"></div></div>
+</section><section id="services" class="hidden section"><h2>Serviços</h2><div class="form"><input id="svname" placeholder="Nome do serviço"><input id="svprice" type="number" step=".01" placeholder="Preço de venda"><input id="svcost" type="number" step=".01" placeholder="Custo"><input id="svcat" placeholder="Categoria"><input id="svdur" placeholder="Duração"><textarea id="svnotes" class="wide" placeholder="Observações / detalhes do serviço (opcional)"></textarea><button onclick="addServiceCatalog()">Adicionar serviço</button></div><div class="card help" style="margin-bottom:12px">Cadastre aqui os detalhes que você costuma usar nesse serviço. Ao adicionar o serviço em uma OS, essa observação aparece como sugestão e pode ser alterada.</div><div id="servicesList"></div></section>
 <section id="followups" class="hidden section"><h2>🔔 Pós-venda / Retorno</h2><div class="card" style="margin-bottom:14px"><b>15 / 30 / 60 dias</b><br><span class="help">Conclua as OS e clique em atualizar. O sistema cria os retornos e permite abrir o WhatsApp com a mensagem configurada.</span><div style="margin-top:12px"><button onclick="generateFollowups()">🔄 Atualizar lembretes</button></div></div><div id="followupsList"></div></section>
 <section id="reports" class="hidden section"><h2>📈 Relatórios</h2><div class="form"><input id="rmonth" type="month"><button onclick="loadReport()">Gerar relatório</button><button class="secondary" onclick="window.print()">🖨 Imprimir tela</button><button onclick="backup()">💾 Fazer backup</button></div><div id="reportBox"></div></section>
 <section id="config" class="hidden section"><h2>Configurações</h2>
@@ -127,6 +170,15 @@ async function editRow(t,id,row){
     if(t==='orders' && k==='status'){
       const opts=['Aberta','Em andamento','Concluída','Cancelada'];
       control=`<select data-key="${k}">${opts.map(o=>`<option ${String(val)===o?'selected':''}>${o}</option>`).join('')}</select>`;
+    }else if(t==='finance' && k==='status'){
+      const opts=['Pendente','Pago'];
+      const cur=String(val||'Pago');
+      control=`<select data-key="${k}">${opts.map(o=>`<option value="${o}" ${cur===o?'selected':''}>${o}</option>`).join('')}</select>`;
+    }else if(t==='finance' && k==='payment'){
+      const base=['','Pix','Dinheiro','Cartão','Transferência','Boleto','Outro'];
+      const cur=String(val||'');
+      const opts=[...base]; if(cur && !opts.includes(cur)) opts.push(cur);
+      control=`<select data-key="${k}"><option value="">Não informado</option>${opts.filter(o=>o!=='').map(o=>`<option value="${esc(o)}" ${cur===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
     }else if(t==='orders' && k==='payment'){
       const base=['','Pix','Dinheiro','Cartão','Transferência','Outro'];
       const cur=String(val||'');
@@ -201,7 +253,7 @@ async function searchOrderCustomer(){
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault()" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
       const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
@@ -229,7 +281,7 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
-  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
+  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault()" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
@@ -334,7 +386,46 @@ async function saveVehicle(){if(!vcustomer.value.trim())return alert('Digite o n
 async function lookup(){lookupmsg.textContent='Consultando placa na Falcon...';try{let x=await api('/api/vehicle/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plate:vplate.value})});let d=x.data||{};vbrand.value=d.marca||d.brand||vbrand.value||'';vmodel.value=d.modelo||d.model||vmodel.value||'';vyear.value=d.ano_modelo||d.ano||d.year||vyear.value||'';vcolor.value=d.cor||d.color||vcolor.value||'';let fonte=x.source==='local'?'cadastro local':'Falcon';lookupmsg.innerHTML='<span class="ok">✓ Dados encontrados pela '+fonte+'. Confira e salve o veículo.</span>'}catch(e){let msg=String(e.message||'');let det='';if(/detalhes:/i.test(msg)){det=msg.split(/detalhes:/i).slice(1).join('detalhes:').trim()}if(/Placa não encontrada na Falcon|vehicle not found/i.test(msg)){msg='Placa não encontrada na Falcon. Você pode preencher os dados manualmente e salvar o veículo.'}lookupmsg.innerHTML='<span class="err">✕ '+esc(msg)+(det?' <small>('+esc(det)+')</small>':'')+'</span>'}}
 async function historyVehicle(plate,customer){let r=await api('/api/vehicle/'+encodeURIComponent(plate)+'/history');document.getElementById('historyTitle').textContent='Histórico — '+(customer||'Veículo')+' — '+plate;document.getElementById('historyContent').innerHTML=r.length?'<table class="historyTable"><tr><th>Data</th><th>OS</th><th>Serviço</th><th>Valor</th><th>Status</th></tr>'+r.map(x=>`<tr><td>${esc(x.date||'')}</td><td>#${x.id||''}</td><td>${esc(x.service||'')}</td><td>${money(Math.max(0,Number(x.value||0)-Number(x.discount||0)))}</td><td>${esc(x.status||'')}</td></tr>`).join('')+'</table>':'<div class="msg">Nenhum serviço anterior encontrado.</div>';document.getElementById('historyModal').classList.remove('hidden')}
 function closeHistory(){document.getElementById('historyModal').classList.add('hidden')}
-async function loadFinance(){let r=await api('/api/finance');let ent=r.filter(x=>x.kind==='Entrada').reduce((a,x)=>a+Number(x.value||0),0),out=r.filter(x=>x.kind==='Saída').reduce((a,x)=>a+Number(x.value||0),0);let by={};r.filter(x=>x.kind==='Entrada').forEach(x=>by[x.payment||'Não informado']=(by[x.payment||'Não informado']||0)+Number(x.value||0));financeSummary.innerHTML='<div class="card">Entradas<div class="num">'+money(ent)+'</div></div><div class="card">Saídas<div class="num">'+money(out)+'</div></div><div class="card">Saldo<div class="num">'+money(ent-out)+'</div></div>'+Object.entries(by).map(([k,v])=>'<div class="card">'+esc(k)+'<div class="num">'+money(v)+'</div></div>').join('');financeList.innerHTML=table(r,'finance')}
+async function loadFinance(){
+  const r=await api('/api/finance');
+  const entradas=r.filter(x=>x.kind==='Entrada');
+  const despesas=r.filter(x=>x.kind==='Saída' && String(x.category||'')!=='Conta Fixa');
+  const fixas=r.filter(x=>x.kind==='Saída' && String(x.category||'')==='Conta Fixa');
+  const ent=entradas.reduce((a,x)=>a+Number(x.value||0),0);
+  const desp=despesas.reduce((a,x)=>a+Number(x.value||0),0);
+  const fixasPagas=fixas.filter(x=>String(x.status||'Pago')!=='Pendente').reduce((a,x)=>a+Number(x.value||0),0);
+  document.getElementById('financeTotalEntradas').textContent=money(ent);
+  document.getElementById('financeTotalDespesas').textContent=money(desp);
+  document.getElementById('financeTotalFixas').textContent=money(fixasPagas);
+  document.getElementById('financeSaldo').textContent=money(ent-desp-fixasPagas);
+  document.getElementById('financeEntradasList').innerHTML=financeTable(entradas);
+  document.getElementById('financeDespesasList').innerHTML=financeTable(despesas);
+  document.getElementById('financeFixasList').innerHTML=financeTable(fixas,true);
+}
+function financeTable(rows,isFixed=false){
+  if(!rows.length)return '<div class="msg">Nenhum lançamento.</div>';
+  return '<div style="overflow:auto"><table><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Pagamento</th>'+(isFixed?'<th>Status</th>':'')+'<th>Ações</th></tr>'+
+    rows.map(r=>'<tr><td>'+esc(r.date||'')+'</td><td>'+esc(r.description||'')+'</td><td>'+money(r.value)+'</td><td>'+esc(r.payment||'')+'</td>'+
+    (isFixed?'<td><b style="color:'+(String(r.status||'Pago')==='Pago'?'#087a32':'#b06b00')+'">'+esc(r.status||'Pago')+'</b></td>':'')+
+    '<td class="actions"><button class="small secondary" onclick=\'editRow("finance",'+r.id+','+JSON.stringify(r).replace(/'/g,"&#39;")+')\'>✏ Editar</button> <button class="small danger" onclick="deleteRow(\'finance\','+r.id+')">🗑</button></td></tr>').join('')+
+    '</table></div>';
+}
+async function addFinanceEntry(kind,category,status){
+  try{
+    const isEntrada=kind==='Entrada';
+    const date=(isEntrada?fdate.value:category==='Despesa'?fdateDespesa.value:fdateFixa.value)||today();
+    const description=(isEntrada?fdesc.value:category==='Despesa'?fdescDespesa.value:fdescFixa.value).trim();
+    const value=Number(isEntrada?fvalue.value:category==='Despesa'?fvalueDespesa.value:fvalueFixa.value)||0;
+    const payment=isEntrada?fpay.value:category==='Despesa'?fpayDespesa.value:fpayFixa.value;
+    if(!description)return alert('Informe a descrição.');
+    if(!(value>0))return alert('Informe um valor válido.');
+    await api('/api/finance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date,kind,description,value,payment,category,status:status||'Pago'})});
+    if(isEntrada){fdesc.value='';fvalue.value='';}
+    else if(category==='Despesa'){fdescDespesa.value='';fvalueDespesa.value='';}
+    else{fdescFixa.value='';fvalueFixa.value='';}
+    await loadFinance();
+  }catch(e){alert(e.message)}
+}
 async function loadReport(){let m=rmonth.value||today().slice(0,7);rmonth.value=m;let r=await api('/api/report?month='+m);reportBox.innerHTML=`<div class="grid"><div class="card">Entradas<div class="num">${money(r.entradas)}</div></div><div class="card">Saídas<div class="num">${money(r.saidas)}</div></div><div class="card">Lucro<div class="num">${money(r.lucro)}</div></div></div><div class="two" style="margin-top:15px"><div class="card"><h3>Serviços realizados</h3>${r.services.length?'<table><tr><th>Serviço</th><th>Qtd.</th><th>Total recebido</th><th>Custo</th></tr>'+r.services.map(x=>`<tr><td>${esc(x.service)}</td><td>${x.qtd}</td><td>${money(x.total)}</td><td>${money(x.custo)}</td></tr>`).join('')+'</table>':'Nenhum serviço.'}<h3 style="margin-top:18px">Recebimentos por forma</h3>${r.methods.length?'<table><tr><th>Forma</th><th>Total</th></tr>'+r.methods.map(x=>`<tr><td>${esc(x.payment||'Não informado')}</td><td>${money(x.total)}</td></tr>`).join('')+'</table>':'Nenhum recebimento.'}</div><div class="card"><h3>Estoque baixo</h3>${r.low_stock.length?r.low_stock.map(x=>`<div class="msg"><b>${esc(x.name)}</b> — ${x.qty} ${esc(x.unit)} (mín. ${x.min_qty})</div>`).join(''):'Nenhum produto abaixo do mínimo.'}</div></div>`}
 async function backup(){window.location='/api/backup'}
 async function initUser(){let u=await api('/api/me');let el=document.getElementById('currentUser');if(el)el.textContent='• '+(u.name||u.username);return u}
