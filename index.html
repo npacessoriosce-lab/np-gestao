@@ -180,13 +180,25 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
   .mobileMore{display:none!important}
 }
 </style>
-</head><body><header><div class="brandHeader"><img src="/np_logo.png" alt="NP Acessórios Automotivos"><div class="brandText">NP <span>GESTÃO</span></div></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão</div></div></div><div class="wrap"><nav>
+
+<style id="np-brand-fix">
+@media(min-width:801px){
+  header .brandHeader{display:flex;align-items:center}
+  header .brandText{font-size:27px;font-weight:900;letter-spacing:.2px}
+  nav .navBrand{display:flex;align-items:center;justify-content:center;padding:2px 8px 16px;margin-bottom:8px;border-bottom:1px solid #2b2b2b}
+  nav .navBrand img{display:block;width:100%;max-width:205px;height:92px;object-fit:contain}
+}
+@media(max-width:800px){
+  header .brandText{font-size:20px;font-weight:900}
+}
+</style>
+</head><body><header><div class="brandHeader"><div class="brandText">NP <span>GESTÃO</span></div></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão</div></div></div><div class="wrap"><nav><div class="navBrand"><img src="/np_logo.png" alt="NP Acessórios Automotivos"></div>
 <div class="tab on" onclick="show('dash',this)">📊 Dashboard</div><div class="tab" onclick="show('vehicles',this)">🚗 Clientes / Veículos</div><div class="tab" onclick="show('appointments',this)">📅 Agenda</div><div class="tab" onclick="show('budgets',this)">💬 Orçamentos</div><div class="tab" onclick="show('orders',this)">📋 Ordens de Serviço</div><div class="tab" onclick="show('stock',this)">📦 Estoque</div><div class="tab" onclick="show('finance',this)">💰 Financeiro</div><div class="tab" onclick="show('services',this)">🔧 Serviços</div><div class="tab" onclick="show('followups',this)">🔔 Pós-venda</div><div class="tab" onclick="show('reports',this)">📈 Relatórios</div><div class="tab" onclick="show('config',this)">⚙ Configurações</div>
 <div class="mobileMore" onclick="toggleMobileMenu()"><strong>☰</strong><span>Mais</span></div>
 </nav>
 <div id="mobileSheet" class="mobileSheet" onclick="closeMobileMenu(event)"><div class="mobileSheetBox" onclick="event.stopPropagation()"><div class="mobileSheetHead"><b>Menu</b><button class="mobileSheetClose" onclick="toggleMobileMenu()">Fechar</button></div><div id="mobileMoreGrid" class="mobileMoreGrid"></div></div></div><main class="main">
 <section id="dash" class="dashboardPage">
-  <div class="dashHero"><div><div class="dashEyebrow">NP GESTÃO AUTOMOTIVA</div><h2>Dashboard</h2><p>Visão geral da sua oficina em um só lugar.</p></div><div class="dashQuick"><span class="dashDot"></span><span>Dados atualizados</span></div></div>
+  <div class="dashHero"><div><div class="dashEyebrow">NP GESTÃO</div><h2>Dashboard</h2><p>Visão geral da sua oficina em um só lugar.</p></div><div class="dashQuick"><span class="dashDot"></span><span>Dados atualizados</span></div></div>
   <div class="dashMainCards" id="dashMainCards"></div>
   <div class="dashMetricGrid" id="dashMetricGrid"></div>
   <div class="dashColumns">

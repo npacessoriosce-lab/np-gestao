@@ -218,6 +218,10 @@ def require_login():
 def health():
     return jsonify(ok=True, service='NP Gestão Automotiva')
 
+@app.get('/np_logo.png')
+def np_logo():
+    return send_from_directory(BASE,'np_logo.png')
+
 @app.get('/login')
 def login_page():
     # O iniciar.bat usa ?novo=1 para começar sempre pela tela de login.
