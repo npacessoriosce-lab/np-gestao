@@ -55,7 +55,56 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
 }
 .customerSuggestions{position:absolute;z-index:50;left:0;right:0;top:calc(100% + 4px);background:#fff;border:1px solid #ddd;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);max-height:260px;overflow:auto}.customerSuggestion{display:flex;flex-direction:column;gap:3px;width:100%;padding:10px 12px;border:0;border-bottom:1px solid #eee;background:#fff;color:#171717;text-align:left;cursor:pointer}.customerSuggestion:last-child{border-bottom:0}.customerSuggestion:hover{background:#f5f5f5}.customerSuggestion span{font-size:12px;color:#666;font-weight:400}</style><style>
 .financeHead{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}.financeCards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:18px}.financeCard{background:#fff;border:1px solid #e2e7ee;border-radius:12px;padding:18px;box-shadow:0 4px 14px rgba(20,30,50,.05);min-height:92px}.financeCard .label{font-weight:700}.financeCard .value{font-size:28px;font-weight:800;margin-top:5px}.financeCard .sub{font-size:13px;color:#718096;margin-top:4px}.financeIcon{width:42px;height:42px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;float:left;margin-right:12px;font-size:22px}.financeTabs{display:flex;gap:6px;border-bottom:1px solid #dfe4ea;margin-bottom:16px}.financeTab{background:transparent;border:0;padding:13px 24px;font-size:16px;font-weight:700;color:#53657d;cursor:pointer;border-bottom:2px solid transparent}.financeTab.active{color:#111;border-bottom-color:#f2b900}.financeGrid2{display:grid;grid-template-columns:1.25fr .9fr;gap:16px}.financeBox{background:#fff;border:1px solid #e2e7ee;border-radius:12px;padding:18px;box-shadow:0 4px 14px rgba(20,30,50,.04)}.financeBox h3{margin:0 0 15px}.financeFormGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.financeFormGrid .full{grid-column:1/-1}.financeBtn{width:100%;background:#e51b23;color:#fff;border:0;border-radius:7px;padding:12px;font-weight:800;cursor:pointer}.financeCatGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.financeCat{padding:13px;border-radius:9px;border:1px solid #e8ebef;background:#fafbfc;cursor:pointer}.financeCat b{display:block}.financeTableWrap{overflow:auto}.financeTable{width:100%;border-collapse:collapse}.financeTable th,.financeTable td{padding:10px 9px;border-bottom:1px solid #edf0f3;text-align:left;font-size:14px}.financeTable th{font-weight:800;background:#fafbfc}.statusPaid{color:#087a32;background:#e5f7ed;border-radius:12px;padding:4px 9px;display:inline-block}.statusPending{color:#a05b00;background:#fff3d6;border-radius:12px;padding:4px 9px;display:inline-block}@media(max-width:900px){.financeCards{grid-template-columns:1fr 1fr}.financeGrid2{grid-template-columns:1fr}}@media(max-width:600px){.financeCards{grid-template-columns:1fr}.financeFormGrid{grid-template-columns:1fr}.financeTabs{overflow:auto}.financeTab{white-space:nowrap;padding:12px 15px}}
-</style></head><body><header><div>NP <span>GESTÃO AUTOMOTIVA</span></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão Automotiva</div></div></div><div class="wrap"><nav>
+</style>
+<style id="os-layout-v2">
+/* Melhoria visual SOMENTE da tela de OS */
+#orders .orderForm{
+  grid-template-columns:repeat(12,minmax(0,1fr));
+  gap:12px;
+  padding:18px;
+  border:1px solid #e3e7ec;
+  box-shadow:0 4px 16px rgba(20,30,50,.05);
+}
+#orders .orderForm > #odate{grid-column:span 2}
+#orders .orderForm > .customerPicker{grid-column:span 3;min-width:0}
+#orders .orderForm > #oplate{grid-column:span 2}
+#orders .orderForm > button[onclick="lookupOrderPlate()"]{grid-column:span 2}
+#orders .orderForm > #orderVehicleInfo{grid-column:span 2;min-width:0}
+#orders .orderForm > #okm{grid-column:span 1}
+#orders .orderForm > #oservice{grid-column:span 3}
+#orders .orderForm > button[onclick="addSelectedService()"]{grid-column:span 2}
+#orders .orderForm > #selectedServices,
+#orders .orderForm > #orderPaymentBuilder{grid-column:1/-1}
+#orders .orderForm > #odiscount{grid-column:span 2}
+#orders .orderForm > #odelivery{grid-column:span 2}
+#orders .orderForm > #ostatus{grid-column:span 2}
+#orders .orderForm > #onotes{grid-column:span 6}
+#orders .orderForm input,#orders .orderForm select,#orders .orderForm button{
+  min-height:46px;
+}
+#orders .customerPicker{z-index:100}
+#orders .customerSuggestions{
+  z-index:9999;
+  max-height:300px;
+}
+#orders .customerSuggestion{
+  min-height:64px;
+  padding:11px 14px;
+}
+#orders .customerSuggestion b{font-size:15px}
+#orders .customerSuggestion span{font-size:12px}
+@media(max-width:900px){
+  #orders .orderForm{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #orders .orderForm > *{grid-column:span 1 !important}
+  #orders .orderForm > #selectedServices,
+  #orders .orderForm > #orderPaymentBuilder{grid-column:1/-1 !important}
+}
+@media(max-width:560px){
+  #orders .orderForm{grid-template-columns:1fr;padding:12px}
+  #orders .orderForm > *{grid-column:1/-1 !important}
+}
+</style>
+</head><body><header><div>NP <span>GESTÃO AUTOMOTIVA</span></div><button type="button" class="mobileMenuButton" onclick="toggleMobileDrawer()" aria-label="Abrir menu">☰</button></header><div id="mobileDrawer" class="mobileDrawer" onclick="closeMobileDrawer(event)"><div class="mobileDrawerPanel" onclick="event.stopPropagation()"><div class="mobileDrawerHead"><div class="mobileDrawerBrand">NP <span>GESTÃO</span></div><button type="button" class="mobileDrawerClose" onclick="toggleMobileDrawer()">✕</button></div><div id="mobileDrawerList" class="mobileDrawerList"></div><div class="mobileDrawerFooter">NP Gestão Automotiva</div></div></div><div class="wrap"><nav>
 <div class="tab on" onclick="show('dash',this)">📊 Dashboard</div><div class="tab" onclick="show('vehicles',this)">🚗 Clientes / Veículos</div><div class="tab" onclick="show('appointments',this)">📅 Agenda</div><div class="tab" onclick="show('budgets',this)">💬 Orçamentos</div><div class="tab" onclick="show('orders',this)">📋 Ordens de Serviço</div><div class="tab" onclick="show('stock',this)">📦 Estoque</div><div class="tab" onclick="show('finance',this)">💰 Financeiro</div><div class="tab" onclick="show('services',this)">🔧 Serviços</div><div class="tab" onclick="show('followups',this)">🔔 Pós-venda</div><div class="tab" onclick="show('reports',this)">📈 Relatórios</div><div class="tab" onclick="show('config',this)">⚙ Configurações</div>
 <div class="mobileMore" onclick="toggleMobileMenu()"><strong>☰</strong><span>Mais</span></div>
 </nav>
@@ -64,7 +113,7 @@ html{min-height:100%;-webkit-text-size-adjust:100%}body{min-height:100%;-webkit-
 <section id="vehicles" class="hidden section"><h2>Clientes / Veículos</h2><div class="form"><input id="vplate" placeholder="Placa (opcional)"><input id="vcustomer" placeholder="Cliente"><input id="vphone" placeholder="WhatsApp"><input id="vbrand" placeholder="Marca"><input id="vmodel" placeholder="Modelo"><input id="vyear" placeholder="Ano"><input id="vcolor" placeholder="Cor"><input id="vkm" type="number" placeholder="KM"><button onclick="lookup()">🔎 Consultar placa</button><button onclick="saveVehicle()">Salvar cliente / veículo</button><div id="lookupmsg" class="wide msg">Você pode salvar somente o cliente ou informar a placa para cadastrar o veículo completo.</div></div><div id="veh"></div></section>
 <section id="appointments" class="hidden section"><h2>Agenda</h2><div class="form"><input id="adate" type="date"><input id="atime" type="time"><input id="acustomer" placeholder="Cliente"><input id="aplate" placeholder="Placa"><input id="aphone" placeholder="WhatsApp"><input id="aservice" placeholder="Serviço"><select id="astatus"><option>Agendado</option><option>Concluído</option><option>Cancelado</option></select><input id="anotes" placeholder="Observação"><button onclick="add('appointments',{date:adate.value,time:atime.value,customer:acustomer.value,plate:aplate.value,phone:aphone.value,service:aservice.value,status:astatus.value,notes:anotes.value})">Adicionar</button></div><div id="calendarBox"></div><div style="margin-top:16px" id="appointmentsList"></div></section>
 <section id="budgets" class="hidden section"><h2>Orçamentos</h2><div class="form"><input id="bdate" type="date"><input id="bcustomer" placeholder="Cliente"><input id="bplate" placeholder="Placa"><input id="btotal" type="number" step=".01" placeholder="Valor"><input id="bdiscount" type="number" step=".01" placeholder="Desconto"><input id="bnotes" placeholder="Observações"><button onclick="add('budgets',{date:bdate.value,customer:bcustomer.value,plate:bplate.value,total:+btotal.value||0,discount:+bdiscount.value||0,status:'Orçamento',notes:bnotes.value})">Criar orçamento</button></div><div id="budgetsList"></div></section>
-<section id="orders" class="hidden section"><h2>📋 Ordens de Serviço</h2><div class="card help" style="margin-bottom:12px"><b>Fluxo recomendado:</b> cadastre a OS → adicione serviços/produtos → acompanhe o status → marque <b>Concluir serviço</b> quando o serviço terminar. O pós-venda será liberado mesmo sem pagamento. Use <b>Receber</b> separadamente para registrar o pagamento e alimentar o financeiro.</div><div class="form"><input id="odate" type="date"><div class="customerPicker" style="position:relative"><input id="ocustomer" placeholder="Nome do cliente" autocomplete="off" oninput="searchOrderCustomer()" onblur="setTimeout(resolveOrderCustomer,180)"><div id="orderCustomerSuggestions" class="customerSuggestions hidden"></div></div><input id="oplate" placeholder="Placa (opcional)" onblur="lookupOrderPlate()"><button type="button" class="secondary" onclick="lookupOrderPlate()">🔎 Buscar placa</button><div id="orderVehicleInfo" class="readonlyBox">Digite o nome do cliente para localizar automaticamente o veículo cadastrado. Se ele tiver mais de um veículo, escolha a placa.</div><input id="okm" type="number" placeholder="KM"><select id="oservice"><option value="">Selecione um serviço</option></select><button type="button" class="secondary" onclick="addSelectedService()">＋ Adicionar serviço</button><div id="selectedServices" class="wide card" style="padding:10px;margin:0">Nenhum serviço adicionado à OS.</div><input id="ovalue" type="number" step=".01" placeholder="Subtotal dos serviços" readonly style="display:none"><input id="ocost" type="number" step=".01" placeholder="Custo total dos serviços" readonly style="display:none"><div id="orderTotals" class="wide card" style="padding:12px;margin:0;background:#fafafa;border:1px solid #eee"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><div style="font-size:13px;color:#666">Subtotal</div><strong id="orderSubtotalDisplay">R$ 0,00</strong></div><div><div style="font-size:13px;color:#666">Desconto</div><strong id="orderDiscountDisplay">R$ 0,00</strong></div><div><div style="font-size:13px;color:#666">Total da OS</div><strong id="orderGrandTotalDisplay" style="font-size:20px">R$ 0,00</strong></div></div></div><input id="odiscount" type="number" step=".01" min="0" placeholder="Desconto (R$)" oninput="updateOrderTotals()"><input id="odelivery" type="date" title="Previsão de entrega"><div id="orderPaymentBuilder" class="wide card" style="padding:10px;margin:0">
+<section id="orders" class="hidden section"><h2>📋 Ordens de Serviço</h2><div class="card help" style="margin-bottom:12px"><b>Fluxo recomendado:</b> cadastre a OS → adicione serviços/produtos → acompanhe o status → marque <b>Concluir serviço</b> quando o serviço terminar. O pós-venda será liberado mesmo sem pagamento. Use <b>Receber</b> separadamente para registrar o pagamento e alimentar o financeiro.</div><div class="form orderForm"><input id="odate" type="date"><div class="customerPicker" style="position:relative"><input id="ocustomer" placeholder="Nome do cliente" autocomplete="off" oninput="searchOrderCustomer()" onblur="setTimeout(resolveOrderCustomer,180)"><div id="orderCustomerSuggestions" class="customerSuggestions hidden"></div></div><input id="oplate" placeholder="Placa (opcional)" onblur="lookupOrderPlate()"><button type="button" class="secondary" onclick="lookupOrderPlate()">🔎 Buscar placa</button><div id="orderVehicleInfo" class="readonlyBox">Digite o nome do cliente para localizar automaticamente o veículo cadastrado. Se ele tiver mais de um veículo, escolha a placa.</div><input id="okm" type="number" placeholder="KM"><select id="oservice"><option value="">Selecione um serviço</option></select><button type="button" class="secondary" onclick="addSelectedService()">＋ Adicionar serviço</button><div id="selectedServices" class="wide card" style="padding:10px;margin:0">Nenhum serviço adicionado à OS.</div><input id="ovalue" type="number" step=".01" placeholder="Subtotal dos serviços" readonly style="display:none"><input id="ocost" type="number" step=".01" placeholder="Custo total dos serviços" readonly style="display:none"><div id="orderTotals" class="wide card" style="padding:12px;margin:0;background:#fafafa;border:1px solid #eee"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><div><div style="font-size:13px;color:#666">Subtotal</div><strong id="orderSubtotalDisplay">R$ 0,00</strong></div><div><div style="font-size:13px;color:#666">Desconto</div><strong id="orderDiscountDisplay">R$ 0,00</strong></div><div><div style="font-size:13px;color:#666">Total da OS</div><strong id="orderGrandTotalDisplay" style="font-size:20px">R$ 0,00</strong></div></div></div><input id="odiscount" type="number" step=".01" min="0" placeholder="Desconto (R$)" oninput="updateOrderTotals()"><input id="odelivery" type="date" title="Previsão de entrega"><div id="orderPaymentBuilder" class="wide card" style="padding:10px;margin:0">
 <div style="font-weight:700;margin-bottom:7px">💳 Pagamento da OS (opcional)</div>
 <div style="font-size:13px;color:#666;margin-bottom:8px">Adicione quantas formas precisar. Ex.: <b>PIX R$ 100,00 + Dinheiro R$ 50,00</b>. O financeiro só é lançado quando houver pagamento registrado.</div>
 <div id="orderPaymentRows"></div>
@@ -200,9 +249,10 @@ async function searchOrderCustomer(){
   orderCustomerSearchTimer=setTimeout(async()=>{
     try{
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
+      window._orderCustomerSearchRows = rows;
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onpointerdown="event.preventDefault(); event.stopPropagation(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
       const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
@@ -230,13 +280,18 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
-  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
+  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onpointerdown="event.preventDefault(); event.stopPropagation(); selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
   try{
-    const rows=await api('/api/vehicles/by-customer?customer='+encodeURIComponent(ocustomer.value.trim()));
-    const v=rows.find(x=>Number(x.id)===Number(id));
+    const cached=Array.isArray(window._orderCustomerSearchRows)?window._orderCustomerSearchRows:[];
+    let v=cached.find(x=>Number(x.id)===Number(id));
+    if(v){ applyOrderCustomer(v); return; }
+    const q=(ocustomer.value||'').trim();
+    if(!q)return;
+    const rows=await api('/api/vehicles/by-customer?customer='+encodeURIComponent(q));
+    v=rows.find(x=>Number(x.id)===Number(id));
     if(v) applyOrderCustomer(v);
   }catch(e){ alert(e.message); }
 }
