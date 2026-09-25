@@ -201,7 +201,7 @@ async function searchOrderCustomer(){
       const rows=await api('/api/vehicles/search-customer?q='+encodeURIComponent(q));
       const box=document.getElementById('orderCustomerSuggestions');
       if(!rows.length){ box.innerHTML=''; box.classList.add('hidden'); return; }
-      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault()" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
+      box.innerHTML=rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault();selectOrderCustomer(${Number(r.id)})"><b>${esc(r.customer||'Cliente')}</b><span>${esc([r.plate,r.brand,r.model,r.year].filter(Boolean).join(' · '))}</span></button>`).join('');
       box.classList.remove('hidden');
       // Se houver exatamente um cadastro para o nome digitado, já relaciona a placa automaticamente.
       const exact=rows.filter(r=>String(r.customer||'').trim().toUpperCase()===q.toUpperCase());
@@ -229,7 +229,7 @@ function applyOrderCustomer(v){
 }
 function showOrderCustomerChoices(rows){
   const box=document.getElementById('orderCustomerSuggestions');
-  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault()" onclick="selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
+  box.innerHTML='<div style="padding:8px;font-size:12px;color:#666;font-weight:700">Este cliente tem mais de um veículo. Escolha a placa:</div>'+rows.map(r=>`<button type="button" class="customerSuggestion" onmousedown="event.preventDefault();selectOrderCustomer(${Number(r.id)})"><b>${esc(r.plate||'Sem placa')}</b><span>${esc([r.brand,r.model,r.year,r.color].filter(Boolean).join(' · '))}</span></button>`).join('');
   box.classList.remove('hidden');
 }
 async function selectOrderCustomer(id){
