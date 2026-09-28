@@ -847,29 +847,151 @@ def get_company():
     return dict(row) if row else {}
 
 def company_header_html(comp):
-    logo=f"<img src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' style='max-height:75px;max-width:220px;object-fit:contain;margin-bottom:8px'>" if comp.get('logo_filename') else ''
-    name=comp.get('fantasy_name') or comp.get('legal_name') or 'NP Acessórios'
-    details=[]
-    if comp.get('cnpj'): details.append('CNPJ: '+comp['cnpj'])
-    addr=' '.join(x for x in [comp.get('street'),comp.get('number'),comp.get('complement')] if x)
-    city=' - '.join(x for x in [comp.get('neighborhood'),comp.get('city')+'/'+comp.get('uf') if comp.get('city') else comp.get('uf')] if x)
-    if addr: details.append(addr)
-    if city: details.append(city)
-    contact=' | '.join(x for x in [comp.get('phone'),comp.get('whatsapp'),comp.get('email')] if x)
-    if contact: details.append(contact)
-    return logo+f"<h1>{name}</h1><div class='company'>{'<br>'.join(details)}</div>"
+    logo = ''
+    if comp.get('logo_filename'):
+        logo = f"<img class='doc-logo' src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' alt='Logo'>"
+    name = comp.get('fantasy_name') or comp.get('legal_name') or 'NP ACESSÓRIOS AUTOMOTIVOS'
+    address = ' '.join(x for x in [comp.get('street'), comp.get('number'), comp.get('complement')] if x)
+    city = ' - '.join(x for x in [comp.get('city'), comp.get('uf')] if x)
+    instagram = comp.get('instagram') or ''
+    website = comp.get('website') or ''
+    phone = comp.get('phone') or comp.get('whatsapp') or ''
+    details = [x for x in [address, city, phone, instagram, website] if x]
+    details_html = ''.join(f"<div>{x}</div>" for x in details)
+    return f"""
+    <header class='doc-header'>
+      <div class='doc-brand'>{logo}<div class='doc-company-name'>{name}</div></div>
+      <div class='doc-contact'>{details_html}</div>
+    </header>
+    """
+
+
+def document_footer_html(comp):
+    footer = (comp.get('footer_text') or '').strip() or 'NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!'
+    return f"<footer class='doc-footer'>{footer}</footer>"
+
+
+def _doc_money(value):
+    return f'R$ {float(value or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
+
 
 @app.get('/api/orders/<int:order_id>/receipt')
 def receipt_order(order_id):
-    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone(); items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
+    comp=get_company(); c=db()
+    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
     pays=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
-    v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None; c.close()
+    v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None
+    if not v and o and str(o['customer'] or '').strip():
+        v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
+    c.close()
     if not o: return 'OS não encontrada',404
-    money=lambda v: f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
-    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0)); received=sum(float(x['value'] or 0) for x in pays); balance=max(0,total-received)
-    rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{money(i['unit_price'])}</td><td>{money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
-    payrows=''.join(f"<tr><td>{x['payment']}</td><td>{money(x['value'])}</td></tr>" for x in pays)
-    return f'''<!doctype html><meta charset="utf-8"><title>Recibo #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:760px;margin:auto;color:#171717}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse;margin-top:12px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:18px}}.paid{{font-size:18px;font-weight:bold}}.box{{background:#f7f7f7;border-radius:10px;padding:12px;margin-top:15px}}@media print{{button{{display:none}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>RECIBO DE PAGAMENTO</h2><p><b>Recibo referente à OS:</b> #{order_id}<br><b>Cliente:</b> {o['customer'] or ''}<br><b>Veículo:</b> {((v['brand']+' '+v['model']).strip() if v else '')} — {o['plate'] or ''}<br><b>Data do recebimento:</b> {datetime.date.today().strftime('%d/%m/%Y')}</p><div class="box"><b>Serviços / itens</b><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item registrado.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(total)}</p><div class="total">Total pago: {money(received)}</div></div><div class="box"><b>Formas de pagamento</b><table><tr><th>Forma</th><th>Valor</th></tr>{payrows or '<tr><td colspan=2>Não informado</td></tr>'}</table></div><p class="paid">Status: {'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</p><p>Este recibo comprova o recebimento dos valores acima referentes à OS #{order_id}.</p><p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
+    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+    received=sum(float(x['value'] or 0) for x in pays)
+    balance=max(0,total-received)
+    rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    payrows=''.join(f"<tr><td>{x['payment']}</td><td>{_doc_money(x['value'])}</td></tr>" for x in pays)
+    brand=(v['brand'] if v else '') or ''
+    model=(v['model'] if v else '') or ''
+    year=(v['year'] if v else '') or ''
+    color=(v['color'] if v else '') or ''
+    plate=o['plate'] or ''
+    date_today=datetime.date.today().strftime('%d/%m/%Y')
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Recibo #{order_id} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:220px;max-height:82px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.55;color:#444;font-size:11px}}
+.doc-title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:27px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.doc-number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:14px;color:#ed1c24;text-align:center;min-width:125px}}.doc-date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.info-box{{border:1px solid #d9dce0;border-radius:5px;overflow:hidden}}.info-title{{padding:7px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.info-body{{display:grid;grid-template-columns:82px 1fr}}.info-row{{display:contents}}.info-row>span{{padding:6px 8px;border-bottom:1px solid #ececec}}.info-row>span:first-child{{font-weight:700;color:#555;background:#fafafa}}
+.items{{width:100%;border-collapse:collapse;margin-top:12px}}.items th{{background:#202124;color:#fff;padding:8px;text-align:left;font-size:10px}}.items td{{padding:8px;border:1px solid #e0e0e0;font-size:11px}}.items th:nth-child(n+3),.items td:nth-child(n+3){{text-align:right}}
+.bottom-grid{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.box{{border:1px solid #d9dce0;border-radius:5px;padding:10px}}.box-title{{font-weight:800;font-size:11px;margin-bottom:7px}}.notes{{min-height:72px;line-height:1.5;color:#333}}.summary div{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}}.summary .total{{margin:7px -10px -10px;padding:10px;background:#ed1c24;color:#fff;font-size:16px;font-weight:800}}
+.signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:70px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
+@media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
+</style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
+<div class='doc-title-row'><h1>RECIBO</h1><div><div class='doc-number'>Nº {order_id:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{(v['phone'] if v and v['phone'] else '')}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div></div></div></div>
+<table class='items'><tr><th>DESCRIÇÃO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
+<div class='bottom-grid'><div class='box'><div class='box-title'>FORMA DE PAGAMENTO</div><table style='width:100%;border-collapse:collapse'><tr><th style='text-align:left;padding:4px 0'>Forma</th><th style='text-align:right;padding:4px 0'>Valor</th></tr>{payrows or '<tr><td colspan="2">Não informado</td></tr>'}</table><div style='margin-top:12px;font-size:11px'>Status: <b>{'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</b></div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL PAGO</b><span>{_doc_money(received)}</span></div></div></div>
+<div class='box' style='margin-top:12px'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div>
+<div class='signature-row'><div></div><div class='signature'>ASSINATURA</div></div>{document_footer_html(comp)}</div>"""
+
+@app.get('/api/orders/<int:order_id>/whatsapp-complete')
+def whatsapp_complete(order_id):
+    c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone(); v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None; c.close()
+    if not o: return jsonify(error='OS não encontrada'),404
+    row=dict(o); row.update({'model':(v['model'] if v else ''), 'phone':(v['phone'] if v else '')})
+    return jsonify(phone=row.get('phone') or '', message=render_message(get_messages()['concluido'],row))
+
+def company_header_html(comp):
+    logo = ''
+    if comp.get('logo_filename'):
+        logo = f"<img class='doc-logo' src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' alt='Logo'>"
+    name = comp.get('fantasy_name') or comp.get('legal_name') or 'NP ACESSÓRIOS AUTOMOTIVOS'
+    address = ' '.join(x for x in [comp.get('street'), comp.get('number'), comp.get('complement')] if x)
+    city = ' - '.join(x for x in [comp.get('city'), comp.get('uf')] if x)
+    instagram = comp.get('instagram') or ''
+    website = comp.get('website') or ''
+    phone = comp.get('phone') or comp.get('whatsapp') or ''
+    details = [x for x in [address, city, phone, instagram, website] if x]
+    details_html = ''.join(f"<div>{x}</div>" for x in details)
+    return f"""
+    <header class='doc-header'>
+      <div class='doc-brand'>{logo}<div class='doc-company-name'>{name}</div></div>
+      <div class='doc-contact'>{details_html}</div>
+    </header>
+    """
+
+
+def document_footer_html(comp):
+    footer = (comp.get('footer_text') or '').strip() or 'NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!'
+    return f"<footer class='doc-footer'>{footer}</footer>"
+
+
+def _doc_money(value):
+    return f'R$ {float(value or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
+
+
+@app.get('/api/orders/<int:order_id>/receipt')
+def receipt_order(order_id):
+    comp=get_company(); c=db()
+    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
+    pays=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
+    v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None
+    if not v and o and str(o['customer'] or '').strip():
+        v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
+    c.close()
+    if not o: return 'OS não encontrada',404
+    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+    received=sum(float(x['value'] or 0) for x in pays)
+    balance=max(0,total-received)
+    rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    payrows=''.join(f"<tr><td>{x['payment']}</td><td>{_doc_money(x['value'])}</td></tr>" for x in pays)
+    brand=(v['brand'] if v else '') or ''
+    model=(v['model'] if v else '') or ''
+    year=(v['year'] if v else '') or ''
+    color=(v['color'] if v else '') or ''
+    plate=o['plate'] or ''
+    date_today=datetime.date.today().strftime('%d/%m/%Y')
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Recibo #{order_id} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:220px;max-height:82px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.55;color:#444;font-size:11px}}
+.doc-title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:27px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.doc-number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:14px;color:#ed1c24;text-align:center;min-width:125px}}.doc-date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.info-box{{border:1px solid #d9dce0;border-radius:5px;overflow:hidden}}.info-title{{padding:7px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.info-body{{display:grid;grid-template-columns:82px 1fr}}.info-row{{display:contents}}.info-row>span{{padding:6px 8px;border-bottom:1px solid #ececec}}.info-row>span:first-child{{font-weight:700;color:#555;background:#fafafa}}
+.items{{width:100%;border-collapse:collapse;margin-top:12px}}.items th{{background:#202124;color:#fff;padding:8px;text-align:left;font-size:10px}}.items td{{padding:8px;border:1px solid #e0e0e0;font-size:11px}}.items th:nth-child(n+3),.items td:nth-child(n+3){{text-align:right}}
+.bottom-grid{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.box{{border:1px solid #d9dce0;border-radius:5px;padding:10px}}.box-title{{font-weight:800;font-size:11px;margin-bottom:7px}}.notes{{min-height:72px;line-height:1.5;color:#333}}.summary div{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}}.summary .total{{margin:7px -10px -10px;padding:10px;background:#ed1c24;color:#fff;font-size:16px;font-weight:800}}
+.signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:70px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
+@media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
+</style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
+<div class='doc-title-row'><h1>RECIBO</h1><div><div class='doc-number'>Nº {order_id:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{(v['phone'] if v and v['phone'] else '')}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div></div></div></div>
+<table class='items'><tr><th>DESCRIÇÃO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
+<div class='bottom-grid'><div class='box'><div class='box-title'>FORMA DE PAGAMENTO</div><table style='width:100%;border-collapse:collapse'><tr><th style='text-align:left;padding:4px 0'>Forma</th><th style='text-align:right;padding:4px 0'>Valor</th></tr>{payrows or '<tr><td colspan="2">Não informado</td></tr>'}</table><div style='margin-top:12px;font-size:11px'>Status: <b>{'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</b></div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL PAGO</b><span>{_doc_money(received)}</span></div></div></div>
+<div class='box' style='margin-top:12px'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div>
+<div class='signature-row'><div></div><div class='signature'>ASSINATURA</div></div>{document_footer_html(comp)}</div>"""
 
 @app.get('/api/orders/<int:order_id>/whatsapp-complete')
 def whatsapp_complete(order_id):
@@ -880,31 +1002,42 @@ def whatsapp_complete(order_id):
 
 @app.get('/api/orders/<int:order_id>/print')
 def print_order(order_id):
-    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    comp=get_company(); c=db()
+    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
     photos=[dict(x) for x in c.execute('SELECT * FROM order_photos WHERE order_id=? ORDER BY area,moment,id',(order_id,)).fetchall()] if o else []
     v=None
     if o:
         plate=str(o['plate'] or '').strip()
-        if plate:
-            v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
+        if plate: v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
         if not v and str(o['customer'] or '').strip():
             v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
     c.close()
     if not o: return 'OS não encontrada',404
-    money=lambda v: f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
-    rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{money(i['unit_price'])}</td><td>{money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
-    photos_html=''.join(f"<div class='photo'><div><b>{p['area']} — {p['moment']}</b></div><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
-    brand=(v['brand'] if v else '') or ''
-    model=(v['model'] if v else '') or ''
-    year=(v['year'] if v else '') or ''
-    color=(v['color'] if v else '') or ''
-    vtype=(v['type'] if v else '') or ''
-    uf=(v['uf'] if v else '') or ''
-    vehicle_line=f"<b>Veículo:</b> {brand} {model} — {year} — {color}<br><b>Placa:</b> {o['plate'] or ''}"
-    extra=''.join([x for x in [f"<b>Tipo:</b> {vtype}" if vtype else '', f"<b>UF:</b> {uf}" if uf else '']])
-    if extra: vehicle_line += '<br>'+extra
-    return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.vehicle{{background:#f7f7f7;border:1px solid #ddd;border-radius:10px;padding:14px;line-height:1.7;margin:15px 0}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}</p><div class="vehicle"><b>Dados do veículo</b><br>{vehicle_line}<br><b>KM:</b> {o['km'] or 0}</div><p><b>Data:</b> {o['date'] or ''}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
+    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+    rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    photos_html=''.join(f"<div class='photo'><b>{p['area']} — {p['moment']}</b><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
+    brand=(v['brand'] if v else '') or ''; model=(v['model'] if v else '') or ''; year=(v['year'] if v else '') or ''; color=(v['color'] if v else '') or ''
+    plate=o['plate'] or ''; phone=(v['phone'] if v else '') or ''; date_today=datetime.date.today().strftime('%d/%m/%Y')
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>OS #{order_id} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:220px;max-height:82px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.55;color:#444;font-size:11px}}
+.doc-title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:27px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.doc-number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:14px;color:#ed1c24;text-align:center;min-width:125px}}.doc-date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.info-box{{border:1px solid #d9dce0;border-radius:5px;overflow:hidden}}.info-title{{padding:7px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.info-body{{display:grid;grid-template-columns:82px 1fr}}.info-row{{display:contents}}.info-row>span{{padding:6px 8px;border-bottom:1px solid #ececec}}.info-row>span:first-child{{font-weight:700;color:#555;background:#fafafa}}
+.items{{width:100%;border-collapse:collapse;margin-top:12px}}.items th{{background:#202124;color:#fff;padding:8px;text-align:left;font-size:10px}}.items td{{padding:8px;border:1px solid #e0e0e0;font-size:11px}}.items th:nth-child(n+3),.items td:nth-child(n+3){{text-align:right}}
+.bottom-grid{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.box{{border:1px solid #d9dce0;border-radius:5px;padding:10px}}.box-title{{font-weight:800;font-size:11px;margin-bottom:7px}}.notes{{min-height:72px;line-height:1.5;color:#333}}.summary div{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}}.summary .total{{margin:7px -10px -10px;padding:10px;background:#ed1c24;color:#fff;font-size:16px;font-weight:800}}
+.photos{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:5px;break-inside:avoid}}.photo img{{width:100%;height:210px;object-fit:cover;margin-top:6px}}
+.signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:55px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
+@media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
+</style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
+<div class='doc-title-row'><h1>ORDEM DE <span>SERVIÇO</span></h1><div><div class='doc-number'>Nº {order_id:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{phone}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div><div class='info-row'><span>KM</span><span>{o['km'] or 0}</span></div></div></div></div>
+<table class='items'><tr><th>SERVIÇO / PRODUTO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
+<div class='bottom-grid'><div class='box'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL</b><span>{_doc_money(total)}</span></div></div></div>
+{('<div class="box" style="margin-top:12px"><div class="box-title">REGISTRO FOTOGRÁFICO</div><div class="photos">'+photos_html+'</div></div>') if photos_html else ''}
+<div class='signature-row'><div class='signature'>ASSINATURA DO CLIENTE</div><div class='signature'>ASSINATURA DA EMPRESA</div></div>{document_footer_html(comp)}</div>"""
 
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
