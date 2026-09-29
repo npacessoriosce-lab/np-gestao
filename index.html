@@ -334,7 +334,8 @@ const api=async(u,o)=>{let r=await fetch(u,o);let text=await r.text();let x=null
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function money(v){return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})}
 function today(){return new Date().toISOString().slice(0,10)}
-function show(id,el){document.querySelectorAll('main>section').forEach(x=>x.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));el.classList.add('on');load(id)}
+let currentSection='dash';
+function show(id,el){currentSection=id;document.querySelectorAll('main>section').forEach(x=>x.classList.add('hidden'));document.getElementById(id).classList.remove('hidden');document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));el.classList.add('on');load(id)}
 let serviceRows=[],stockRows=[],selectedServices=[],editTable=null,editId=null,itemOrderId=null,photoOrderId=null,paymentOrderId=null,paymentTotal=0;
 const labels={id:'ID',name:'Nome',price:'Preço',cost:'Custo',plate:'Placa',customer:'Cliente',phone:'WhatsApp',brand:'Marca',model:'Modelo',year:'Ano',color:'Cor',km:'KM',date:'Data',time:'Horário',service:'Serviço',status:'Status',value:'Valor',qty:'Quantidade',unit_cost:'Custo unitário',min_qty:'Estoque mínimo',unit:'Unidade',supplier:'Fornecedor',kind:'Tipo',description:'Descrição',payment:'Pagamento',category:'Categoria',discount:'Desconto',delivery_date:'Entrega',notes:'Observações',total:'Total'};
 function table(rows,t){if(!rows.length)return '<div class="card">Nenhum registro.</div>';let hidden=['id','created_at','stock_applied'];if(t==='vehicles')hidden=hidden.concat(['fuel','municipality','type','combustivel','municipio']);let keys=Object.keys(rows[0]).filter(k=>!hidden.includes(k));const cls=t==='vehicles'?'dataTable vehiclesTable':'';return '<div class="tableWrap"><table class="'+cls+'"><thead><tr>'+keys.map(k=>'<th>'+esc(labels[k]||k)+'</th>').join('')+'<th>Ações</th></tr></thead><tbody>'+rows.map(r=>'<tr>'+keys.map(k=>'<td>'+esc((['price','cost','value','unit_cost','total','discount'].includes(k)?money(r[k]):r[k]))+'</td>').join('')+'<td class="actions">'+actions(t,r)+'</td></tr>').join('')+'</tbody></table></div>'}
@@ -692,6 +693,17 @@ async function uploadCompanyLogo(){let f=companyLogo.files[0];if(!f)return alert
 async function saveToken(){try{await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token.value})});token.value='';configmsg.innerHTML='<span class="ok">✓ Token salvo.</span>'}catch(e){configmsg.innerHTML='<span class="err">'+esc(e.message)+'</span>'}}
 function setDefaults(){[adate,bdate,odate,fdate].forEach(x=>x.value=today());rmonth.value=today().slice(0,7)}
 setDefaults();load('dash');api('/api/messages').then(m=>window.npMessages=m).catch(()=>{});
+// Atualiza automaticamente a tela a cada 5 segundos, sem interromper campos em edição.
+setInterval(()=>{
+  try{
+    if(document.visibilityState!=='visible') return;
+    const active=document.activeElement;
+    const editing=active && (active.matches('input,textarea,select,[contenteditable=\"true\"]'));
+    const modalOpen=[...document.querySelectorAll('.modal')].some(x=>!x.classList.contains('hidden'));
+    if(editing || modalOpen || !currentSection) return;
+    load(currentSection);
+  }catch(e){}
+},5000);
 // V15: não registra Service Worker no modo local. Isso evita cache de versões antigas e travamentos/flicker.
 (async()=>{
   try {

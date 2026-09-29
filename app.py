@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, Response
 import sqlite3, os, requests, datetime, shutil, json, re, base64
 
 try:
@@ -97,10 +97,10 @@ def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
- '15':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 15 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Passando para saber como ficou e lembrar que estamos à disposição. Qualquer coisa, é só chamar! 😊',
- '30':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 30 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Que tal agendarmos um novo atendimento? Estamos à disposição! 😊',
- '60':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 60 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Seu carro merece aquele cuidado novamente. Se quiser agendar, é só chamar! 😊',
- 'concluido':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. O serviço do seu [VEICULO] foi concluído! 🚗✨ Seu carro está pronto para retirada. Qualquer dúvida, estamos à disposição. Obrigado pela confiança! 😊'
+ '15':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 15 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Passando para saber como ficou e lembrar que estamos à disposição. Qualquer coisa, é só chamar! \U0001F60A',
+ '30':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 30 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Que tal agendarmos um novo atendimento? Estamos à disposição! \U0001F60A',
+ '60':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 60 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Seu carro merece aquele cuidado novamente. Se quiser agendar, é só chamar! \U0001F60A',
+ 'concluido':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. O serviço do seu [VEICULO] foi concluído! \U0001F697\u2728 Seu carro está pronto para retirada. Qualquer dúvida, estamos à disposição. Obrigado pela confiança! \U0001F60A'
 }
 def get_messages():
     import json
@@ -108,6 +108,11 @@ def get_messages():
     if MESSAGES_FILE.exists():
         try: data.update(json.loads(MESSAGES_FILE.read_text(encoding='utf-8')))
         except: pass
+    # Se uma versão antiga tiver gravado caracteres de emoji quebrados,
+    # volta somente aquela mensagem ao texto padrão correto.
+    for k in list(DEFAULT_MESSAGES):
+        if '�' in str(data.get(k,'')):
+            data[k]=DEFAULT_MESSAGES[k]
     return data
 def set_messages(data):
     import json
@@ -366,11 +371,12 @@ def config_save():
     set_token(token); return jsonify(ok=True)
 
 @app.get('/api/messages')
-def messages_get(): return jsonify(get_messages())
+def messages_get():
+    return Response(json.dumps(get_messages(), ensure_ascii=False), content_type='application/json; charset=utf-8')
 
 @app.post('/api/messages')
 def messages_save():
-    return jsonify(set_messages(request.json or {}))
+    return Response(json.dumps(set_messages(request.json or {}), ensure_ascii=False), content_type='application/json; charset=utf-8')
 
 def _norm_customer_name(value):
     import unicodedata
@@ -886,10 +892,25 @@ def receipt_order(order_id):
         v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
     c.close()
     if not o: return 'OS não encontrada',404
+    # Número exibido da OS é sequencial e independente do ID interno do banco.
+    # Mantém exatamente a mesma regra usada na tela de Ordens de Serviço.
+    seq_rows=c.execute('SELECT id FROM orders ORDER BY id').fetchall()
+    display_map={int(r['id']): i+1 for i,r in enumerate(seq_rows)}
+    display_number=display_map.get(int(order_id), order_id)
     total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
     received=sum(float(x['value'] or 0) for x in pays)
     balance=max(0,total-received)
-    rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    if items:
+        rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    else:
+        # OS antigas podem ter o serviço salvo apenas no campo orders.service,
+        # sem registros na tabela order_items. No recibo, use essa informação
+        # como fallback para nunca deixar o serviço em branco.
+        legacy_service=str(o['service'] or '').strip()
+        if legacy_service:
+            rows=f"<tr><td>{legacy_service}</td><td>1</td><td>{_doc_money(total)}</td><td>{_doc_money(total)}</td></tr>"
+        else:
+            rows='<tr><td colspan="4">Nenhum item registrado.</td></tr>'
     payrows=''.join(f"<tr><td>{x['payment']}</td><td>{_doc_money(x['value'])}</td></tr>" for x in pays)
     brand=(v['brand'] if v else '') or ''
     model=(v['model'] if v else '') or ''
@@ -897,7 +918,7 @@ def receipt_order(order_id):
     color=(v['color'] if v else '') or ''
     plate=o['plate'] or ''
     date_today=datetime.date.today().strftime('%d/%m/%Y')
-    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Recibo #{order_id} - NP Acessórios</title>
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Recibo #{display_number} - NP Acessórios</title>
 <style>
 @page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
 .sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
@@ -909,7 +930,7 @@ def receipt_order(order_id):
 .signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:70px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
 @media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
 </style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
-<div class='doc-title-row'><h1>RECIBO</h1><div><div class='doc-number'>Nº {order_id:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='doc-title-row'><h1>RECIBO</h1><div><div class='doc-number'>Nº {display_number:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
 <div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{(v['phone'] if v and v['phone'] else '')}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div></div></div></div>
 <table class='items'><tr><th>DESCRIÇÃO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
 <div class='bottom-grid'><div class='box'><div class='box-title'>FORMA DE PAGAMENTO</div><table style='width:100%;border-collapse:collapse'><tr><th style='text-align:left;padding:4px 0'>Forma</th><th style='text-align:right;padding:4px 0'>Valor</th></tr>{payrows or '<tr><td colspan="2">Não informado</td></tr>'}</table><div style='margin-top:12px;font-size:11px'>Status: <b>{'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</b></div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL PAGO</b><span>{_doc_money(received)}</span></div></div></div>
@@ -937,12 +958,16 @@ def print_order(order_id):
             v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
     c.close()
     if not o: return 'OS não encontrada',404
+    # Mesma numeração sequencial exibida na lista de OS. O ID interno permanece intacto.
+    cnum=db(); seq_rows=cnum.execute('SELECT id FROM orders ORDER BY id').fetchall(); cnum.close()
+    display_map={int(r['id']): i+1 for i,r in enumerate(seq_rows)}
+    display_number=display_map.get(int(order_id), order_id)
     total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
     rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
     photos_html=''.join(f"<div class='photo'><b>{p['area']} — {p['moment']}</b><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
     brand=(v['brand'] if v else '') or ''; model=(v['model'] if v else '') or ''; year=(v['year'] if v else '') or ''; color=(v['color'] if v else '') or ''
     plate=o['plate'] or ''; phone=(v['phone'] if v else '') or ''; date_today=datetime.date.today().strftime('%d/%m/%Y')
-    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>OS #{order_id} - NP Acessórios</title>
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>OS #{display_number} - NP Acessórios</title>
 <style>
 @page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
 .sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
@@ -955,7 +980,7 @@ def print_order(order_id):
 .signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:55px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
 @media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
 </style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
-<div class='doc-title-row'><h1>ORDEM DE <span>SERVIÇO</span></h1><div><div class='doc-number'>Nº {order_id:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='doc-title-row'><h1>ORDEM DE <span>SERVIÇO</span></h1><div><div class='doc-number'>Nº {display_number:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
 <div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{phone}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div><div class='info-row'><span>KM</span><span>{o['km'] or 0}</span></div></div></div></div>
 <table class='items'><tr><th>SERVIÇO / PRODUTO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
 <div class='bottom-grid'><div class='box'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL</b><span>{_doc_money(total)}</span></div></div></div>
