@@ -792,6 +792,45 @@ def order_payment_add(order_id):
     c.commit(); c.close()
     return jsonify(id=cur.lastrowid,order_id=order_id,date=date,payment=pay,value=val,notes=notes)
 
+@app.post('/api/orders/<int:order_id>/receive')
+def receive_order_payment(order_id):
+    """Registra recebimento parcial ou total sem obrigar a concluir a OS."""
+    d=request.json or {}; c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    if not o:
+        c.close(); return jsonify(error='OS não encontrada'),404
+    if o['status']=='Cancelada':
+        c.close(); return jsonify(error='Não é possível receber uma OS cancelada.'),400
+    total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
+    raw=d.get('payments'); payments=[]
+    if isinstance(raw,list):
+        for x in raw:
+            try: val=float(x.get('value') or 0)
+            except Exception: val=0.0
+            pay=str(x.get('payment') or '').strip()
+            notes=str(x.get('notes') or '').strip()
+            if val>0 and pay: payments.append((pay,val,notes))
+    paid=sum(v for _,v,_ in payments)
+    if total>0 and not payments:
+        c.close(); return jsonify(error='Informe pelo menos um pagamento.'),400
+    if paid-total>0.01:
+        c.close(); return jsonify(error=f'O valor recebido não pode ultrapassar {money(total)}. Recebido: {money(paid)}.'),400
+    try:
+        c.execute('DELETE FROM order_payments WHERE order_id=?',(order_id,))
+        today=datetime.date.today().isoformat()
+        for pay,val,notes in payments:
+            c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(order_id,today,pay,val,notes))
+        payment_label=', '.join(f'{pay}: {money(val)}' for pay,val,_ in payments)
+        c.execute('UPDATE orders SET payment=? WHERE id=?',(payment_label,order_id))
+        register_order_finance(c,order_id,payments)
+        audit(c,'Recebeu','orders',order_id,'Pagamento registrado: '+payment_label)
+        c.commit()
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        c.close(); return jsonify(error='Não foi possível registrar o pagamento: '+str(e)),500
+    c.close()
+    return jsonify(ok=True,received=paid,total=total,remaining=max(0,total-paid),partial=paid<total-0.01,paid_full=paid>=total-0.01)
+
 @app.post('/api/orders/<int:order_id>/finish')
 def finish_order(order_id):
     d=request.json or {}; c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
@@ -1068,6 +1107,87 @@ def report():
     recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND date LIKE ? ORDER BY date DESC,id DESC LIMIT 100",(month+'%',)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low)
+
+@app.get('/api/faturamento')
+def faturamento():
+    """Resumo de faturamento e serviços realizados a partir das OS.
+    Não altera Financeiro nem grava nenhum dado; apenas consolida informações existentes.
+    """
+    month=request.args.get('month') or datetime.date.today().strftime('%Y-%m')
+    c=db()
+    orders=[dict(x) for x in c.execute(
+        "SELECT * FROM orders WHERE date LIKE ? ORDER BY date DESC,id DESC",(month+'%',)
+    ).fetchall()]
+    ids=[int(x['id']) for x in orders]
+    items=[]
+    if ids:
+        marks=','.join('?' for _ in ids)
+        items=[dict(x) for x in c.execute(
+            f"SELECT * FROM order_items WHERE order_id IN ({marks}) ORDER BY order_id,id",ids
+        ).fetchall()]
+    pays=[]
+    if ids:
+        marks=','.join('?' for _ in ids)
+        pays=[dict(x) for x in c.execute(
+            f"SELECT * FROM order_payments WHERE order_id IN ({marks}) ORDER BY date DESC,id DESC",ids
+        ).fetchall()]
+    all_order_ids=[int(x['id']) for x in c.execute('SELECT id FROM orders ORDER BY id').fetchall()]
+    c.close()
+
+    display_map={oid:idx+1 for idx,oid in enumerate(all_order_ids)}
+    by_order={i:[] for i in ids}
+    for it in items:
+        by_order.setdefault(int(it['order_id']),[]).append(it)
+    paid_by_order={i:0.0 for i in ids}
+    methods={}
+    for pay in pays:
+        oid=int(pay['order_id']); val=float(pay.get('value') or 0)
+        paid_by_order[oid]=paid_by_order.get(oid,0)+val
+        method=str(pay.get('payment') or 'Não informado').strip() or 'Não informado'
+        methods[method]=methods.get(method,0)+val
+
+    gross=sum(float(o.get('value') or 0) for o in orders)
+    discounts=sum(float(o.get('discount') or 0) for o in orders)
+    net=sum(max(0,float(o.get('value') or 0)-float(o.get('discount') or 0)) for o in orders)
+    received=sum(paid_by_order.values())
+    pending=sum(max(0,max(0,float(o.get('value') or 0)-float(o.get('discount') or 0))-paid_by_order.get(int(o['id']),0)) for o in orders)
+    completed=sum(1 for o in orders if str(o.get('status') or '')=='Concluída')
+
+    services={}
+    for o in orders:
+        oid=int(o['id']); its=by_order.get(oid,[])
+        if its:
+            for it in its:
+                name=str(it.get('description') or 'Serviço').strip() or 'Serviço'
+                qty=float(it.get('qty') or 1); total=qty*float(it.get('unit_price') or 0)
+                cost=qty*float(it.get('unit_cost') or 0)
+                rec=services.setdefault(name,{'service':name,'qtd':0,'total':0.0,'custo':0.0})
+                rec['qtd']+=qty; rec['total']+=total; rec['custo']+=cost
+        else:
+            # Compatibilidade com OS antigas que guardavam o serviço somente em orders.service.
+            names=[x.strip() for x in str(o.get('service') or '').split(',') if x.strip()]
+            names=names or ['Serviço não informado']
+            unit=max(0,(float(o.get('value') or 0)-float(o.get('discount') or 0))/len(names))
+            for name in names:
+                rec=services.setdefault(name,{'service':name,'qtd':0,'total':0.0,'custo':0.0})
+                rec['qtd']+=1; rec['total']+=unit
+
+    service_rows=sorted(services.values(),key=lambda x:x['total'],reverse=True)
+    # A numeração exibida das OS é sequencial e independente do ID interno.
+    os_rows=[]
+    for o in orders:
+        total=max(0,float(o.get('value') or 0)-float(o.get('discount') or 0)); paid=paid_by_order.get(int(o['id']),0)
+        os_rows.append({
+            'id':int(o['id']),'display_number':display_map.get(int(o['id']),int(o['id'])),'date':o.get('date') or '','customer':o.get('customer') or '',
+            'plate':o.get('plate') or '','service':o.get('service') or '',
+            'value':float(o.get('value') or 0),'discount':float(o.get('discount') or 0),
+            'total':total,'received':paid,'pending':max(0,total-paid),'status':o.get('status') or ''
+        })
+    return jsonify(month=month,metrics={
+        'gross':gross,'discounts':discounts,'net':net,'received':received,
+        'pending':pending,'orders':len(orders),'completed':completed,
+        'ticket':(net/len(orders) if orders else 0)
+    },services=service_rows,methods=[{'payment':k,'total':v} for k,v in sorted(methods.items(),key=lambda kv:kv[1],reverse=True)],orders=os_rows)
 
 @app.get('/api/dashboard')
 def dashboard():
