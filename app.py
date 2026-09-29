@@ -538,7 +538,25 @@ def update_item(table,item_id):
 @app.delete('/api/<table>/<int:item_id>')
 def delete_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
-    c=db(); audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}'); c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
+    c=db()
+    try:
+        # Uma OS pode ter recebido pagamentos que foram lançados no Financeiro.
+        # Ao excluir a OS, esses recebimentos vinculados precisam ser removidos
+        # junto, para não deixar entradas órfãs no Financeiro.
+        if table=='orders':
+            c.execute("DELETE FROM finance WHERE order_id=?",(item_id,))
+            c.execute("DELETE FROM order_payments WHERE order_id=?",(item_id,))
+        audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}')
+        c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,))
+        c.commit()
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        c.close()
+        app.logger.exception('Erro ao excluir %s %s', table, item_id)
+        return jsonify(error=f'Não foi possível excluir: {e}'),500
+    c.close()
+    return jsonify(ok=True)
 
 def register_order_finance(c, order_id, payments=None):
     """Register the confirmed OS payment in finance without duplicating entries."""
@@ -1063,8 +1081,24 @@ def print_all_orders():
     if payment_filter: filters.append('Pagamento: '+('Pagamento parcial' if payment_filter=='Parcial' else payment_filter))
     subtitle=' · '.join(filters) if filters else 'Todas as Ordens de Serviço'
     html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral de OS - NP Acessórios</title><style>
-@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}small{{color:#666;font-size:7px}}.status{{display:inline-block;padding:4px 6px;border-radius:10px;font-weight:700;white-space:nowrap}}.paid{{background:#def5e7;color:#16733c}}.partial{{background:#fff0cf;color:#8a5a00}}.pending{{background:#ffe1e1;color:#a11}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
+@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.head .doc-logo{{max-width:170px;max-height:58px;width:auto;height:auto;object-fit:contain;display:block}}.head .doc-header{{padding:2px 0 6px;gap:15px}}.head .doc-brand{{gap:8px;min-width:35%}}.head .doc-company-name{{font-size:10px}}.head .doc-contact{{font-size:8px;line-height:1.35}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}small{{color:#666;font-size:7px}}.status{{display:inline-block;padding:4px 6px;border-radius:10px;font-weight:700;white-space:nowrap}}.paid{{background:#def5e7;color:#16733c}}.partial{{background:#fff0cf;color:#8a5a00}}.pending{{background:#ffe1e1;color:#a11}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
 </style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DAS ORDENS DE SERVIÇO</h1><div class='sub'>{subtitle} · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total das OS</b><strong>{_doc_money(total_value)}</strong></div><div class='card'><b>Total recebido</b><strong>{_doc_money(total_received)}</strong></div><div class='card'><b>Total pendente</b><strong>{_doc_money(total_pending)}</strong></div></div><table><thead><tr><th>OS</th><th>DATA</th><th>CLIENTE / VEÍCULO</th><th>SERVIÇO</th><th>VALOR ORIGINAL</th><th>DESCONTO</th><th>TOTAL</th><th>RECEBIDO</th><th>PENDENTE</th><th>STATUS</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
+    return html
+
+@app.get('/api/finance/print-all')
+def print_all_finance():
+    comp=get_company(); c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM finance ORDER BY date DESC, id DESC').fetchall()]
+    c.close()
+    entradas=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Entrada')
+    saidas_pagas=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Saída' and (str(r.get('category') or '')!='Conta Fixa' or str(r.get('status') or 'Pago')=='Pago'))
+    fixas_pendentes=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Saída' and str(r.get('category') or '')=='Conta Fixa' and str(r.get('status') or 'Pago')!='Pago')
+    saldo=entradas-saidas_pagas
+    trs=''.join(f"<tr><td>{r.get('date') or '-'}</td><td>{r.get('kind') or '-'}</td><td>{r.get('category') or '-'}</td><td>{r.get('description') or '-'}</td><td>{r.get('payment') or '-'}</td><td>{r.get('status') or 'Pago'}</td><td class='money'>{_doc_money(r.get('value') or 0)}</td></tr>" for r in rows)
+    if not trs: trs='<tr><td colspan="7" style="text-align:center;padding:25px">Nenhum lançamento financeiro encontrado.</td></tr>'
+    html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral do Financeiro - NP Acessórios</title><style>
+@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.head .doc-logo{{max-width:170px;max-height:58px;width:auto;height:auto;object-fit:contain;display:block}}.head .doc-header{{padding:2px 0 6px;gap:15px}}.head .doc-brand{{gap:8px;min-width:35%}}.head .doc-company-name{{font-size:10px}}.head .doc-contact{{font-size:8px;line-height:1.35}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
+</style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DO FINANCEIRO</h1><div class='sub'>Todos os lançamentos financeiros · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total de entradas</b><strong>{_doc_money(entradas)}</strong></div><div class='card'><b>Despesas pagas</b><strong>{_doc_money(saidas_pagas)}</strong></div><div class='card'><b>Saldo</b><strong>{_doc_money(saldo)}</strong></div><div class='card'><b>Contas fixas pendentes</b><strong>{_doc_money(fixas_pendentes)}</strong></div></div><table><thead><tr><th>DATA</th><th>TIPO</th><th>CATEGORIA</th><th>DESCRIÇÃO</th><th>PAGAMENTO</th><th>STATUS</th><th>VALOR</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
     return html
 
 @app.post('/api/budgets/<int:budget_id>/to-order')
