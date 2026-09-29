@@ -890,13 +890,15 @@ def receipt_order(order_id):
     v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None
     if not v and o and str(o['customer'] or '').strip():
         v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
-    c.close()
-    if not o: return 'OS não encontrada',404
+    if not o:
+        c.close()
+        return 'OS não encontrada',404
     # Número exibido da OS é sequencial e independente do ID interno do banco.
-    # Mantém exatamente a mesma regra usada na tela de Ordens de Serviço.
+    # Calcula antes de fechar a conexão para evitar erro 500 no recibo.
     seq_rows=c.execute('SELECT id FROM orders ORDER BY id').fetchall()
     display_map={int(r['id']): i+1 for i,r in enumerate(seq_rows)}
     display_number=display_map.get(int(order_id), order_id)
+    c.close()
     total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
     received=sum(float(x['value'] or 0) for x in pays)
     balance=max(0,total-received)
