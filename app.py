@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, session, redirect, Response
 import sqlite3, os, requests, datetime, shutil, json, re, base64
 
 try:
@@ -97,10 +97,10 @@ def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
- '15':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 15 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Passando para saber como ficou e lembrar que estamos à disposição. Qualquer coisa, é só chamar! 😊',
- '30':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 30 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Que tal agendarmos um novo atendimento? Estamos à disposição! 😊',
- '60':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. Já faz 60 dias desde o último serviço no seu carro ([SERVICO]). 🚗✨ Seu carro merece aquele cuidado novamente. Se quiser agendar, é só chamar! 😊',
- 'concluido':'Olá, [NOME]! 👋 Aqui é da NP Acessórios. O serviço do seu [VEICULO] foi concluído! 🚗✨ Seu carro está pronto para retirada. Qualquer dúvida, estamos à disposição. Obrigado pela confiança! 😊'
+ '15':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 15 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Passando para saber como ficou e lembrar que estamos à disposição. Qualquer coisa, é só chamar! \U0001F60A',
+ '30':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 30 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Que tal agendarmos um novo atendimento? Estamos à disposição! \U0001F60A',
+ '60':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. Já faz 60 dias desde o último serviço no seu carro ([SERVICO]). \U0001F697\u2728 Seu carro merece aquele cuidado novamente. Se quiser agendar, é só chamar! \U0001F60A',
+ 'concluido':'Olá, [NOME]! \U0001F44B Aqui é da NP Acessórios. O serviço do seu [VEICULO] foi concluído! \U0001F697\u2728 Seu carro está pronto para retirada. Qualquer dúvida, estamos à disposição. Obrigado pela confiança! \U0001F60A'
 }
 def get_messages():
     import json
@@ -108,6 +108,11 @@ def get_messages():
     if MESSAGES_FILE.exists():
         try: data.update(json.loads(MESSAGES_FILE.read_text(encoding='utf-8')))
         except: pass
+    # Se uma versão antiga tiver gravado caracteres de emoji quebrados,
+    # volta somente aquela mensagem ao texto padrão correto.
+    for k in list(DEFAULT_MESSAGES):
+        if '�' in str(data.get(k,'')):
+            data[k]=DEFAULT_MESSAGES[k]
     return data
 def set_messages(data):
     import json
@@ -153,6 +158,7 @@ def init():
             if 'logo_data' not in colnames(c,'company'):
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
+            addcol(c,'finance','status','TEXT','Pago')
             c.commit()
         finally:
             c.close()
@@ -180,7 +186,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -216,6 +222,10 @@ def require_login():
 @app.get('/health')
 def health():
     return jsonify(ok=True, service='NP Gestão Automotiva')
+
+@app.get('/np_logo.png')
+def np_logo():
+    return send_from_directory(BASE,'np_logo.png')
 
 @app.get('/login')
 def login_page():
@@ -361,11 +371,58 @@ def config_save():
     set_token(token); return jsonify(ok=True)
 
 @app.get('/api/messages')
-def messages_get(): return jsonify(get_messages())
+def messages_get():
+    return Response(json.dumps(get_messages(), ensure_ascii=False), content_type='application/json; charset=utf-8')
 
 @app.post('/api/messages')
 def messages_save():
-    return jsonify(set_messages(request.json or {}))
+    return Response(json.dumps(set_messages(request.json or {}), ensure_ascii=False), content_type='application/json; charset=utf-8')
+
+def _norm_customer_name(value):
+    import unicodedata
+    s=str(value or '')
+    s=unicodedata.normalize('NFD',s)
+    s=''.join(ch for ch in s if unicodedata.category(ch)!='Mn')
+    return ' '.join(s.strip().lower().split())
+
+@app.get('/api/vehicles/search-customer')
+def vehicles_search_customer():
+    q=str(request.args.get('q') or '').strip()
+    if not q:
+        return jsonify([])
+    nq=_norm_customer_name(q)
+    c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY customer COLLATE NOCASE ASC, id DESC').fetchall()]
+    c.close()
+    # Busca sem diferenciar acentos/maiúsculas e agrupa nomes equivalentes.
+    matched=[r for r in rows if nq in _norm_customer_name(r.get('customer'))]
+    groups={}
+    for r in matched:
+        key=_norm_customer_name(r.get('customer'))
+        groups.setdefault(key,[]).append(r)
+    out=[]
+    for key, items in groups.items():
+        # Usa o nome mais completo/canônico disponível.
+        canonical=max((str(x.get('customer') or '').strip() for x in items), key=len, default='Cliente')
+        for r in items:
+            r['customer']=canonical
+            out.append(r)
+    return jsonify(out[:30])
+
+@app.get('/api/vehicles/by-customer')
+def vehicles_by_customer():
+    q=str(request.args.get('customer') or '').strip()
+    if not q:
+        return jsonify([])
+    nq=_norm_customer_name(q)
+    c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
+    c.close()
+    matched=[r for r in rows if _norm_customer_name(r.get('customer'))==nq]
+    # Mantém um nome único para o cliente, mesmo se existirem cadastros antigos com/sem acento.
+    canonical=max((str(x.get('customer') or '').strip() for x in matched), key=len, default=q)
+    for r in matched: r['customer']=canonical
+    return jsonify(matched)
 
 @app.get('/api/vehicle/by-plate/<plate>')
 def vehicle_by_plate(plate):
@@ -381,9 +438,58 @@ def generic(table):
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
         rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
+
+        # As OS guarda cliente/placa, enquanto telefone e dados do veículo
+        # ficam no cadastro de vehicles. A lista de OS precisa cruzar essas
+        # informações para mostrar os dados que já foram cadastrados, sem
+        # duplicar ou alterar nada no banco.
+        if table=='orders' and rows:
+            vehicle_rows=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
+
+            def _plate_key(v):
+                return normalize_plate(str(v or ''))
+
+            def _customer_key(v):
+                return _norm_customer_name(v)
+
+            by_plate={}
+            by_customer={}
+            for v in vehicle_rows:
+                pk=_plate_key(v.get('plate'))
+                if pk and pk not in by_plate:
+                    by_plate[pk]=v
+                ck=_customer_key(v.get('customer'))
+                if ck and ck not in by_customer:
+                    by_customer[ck]=v
+
+            for r in rows:
+                # Primeiro usa a placa da própria OS, que é a referência
+                # exata do veículo. Se a OS não tiver placa, usa o cadastro
+                # do cliente quando houver um veículo correspondente.
+                v=by_plate.get(_plate_key(r.get('plate'))) if r.get('plate') else None
+                if not v:
+                    v=by_customer.get(_customer_key(r.get('customer')))
+                r['vehicle_id']=v.get('id') if v else None
+                r['phone']=(v.get('phone') or '') if v else ''
+                r['brand']=(v.get('brand') or '') if v else ''
+                r['model']=(v.get('model') or '') if v else ''
+                r['year']=(v.get('year') or '') if v else ''
+                r['color']=(v.get('color') or '') if v else ''
+                r['fuel']=(v.get('fuel') or '') if v else ''
+                r['type']=(v.get('type') or '') if v else ''
+
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if not data: c.close(); return jsonify(error='Dados vazios'),400
+    # Clientes podem ser cadastrados sem veículo/placa. Para vehicles, placa vazia vira NULL
+    # para não conflitar com a restrição UNIQUE e permitir vários veículos depois para o mesmo cliente.
+    if table == 'vehicles':
+        plate = str(data.get('plate') or '').strip().upper()
+        customer = str(data.get('customer') or '').strip()
+        if not customer:
+            c.close(); return jsonify(error='Informe o nome do cliente.'),400
+        data['customer'] = customer
+        data['plate'] = plate or None
     # PostgreSQL uses BOOLEAN for active flags; the original SQLite app may send 1/0.
     # For services, omit active on creation and let PostgreSQL use its DEFAULT TRUE.
     if USE_POSTGRES and table == 'services':
@@ -489,83 +595,16 @@ def normalize_plate(p): return ''.join(ch for ch in str(p or '').upper() if ch.i
 
 @app.post('/api/vehicle/lookup')
 def lookup():
-    plate=normalize_plate((request.json or {}).get('plate',''))
-    if not plate:
-        return jsonify(error='Digite a placa.'),400
-
-    # Se o veículo já estiver cadastrado, usamos os dados locais primeiro.
-    # Assim a consulta não consome a cota da Falcon desnecessariamente.
+    plate=normalize_plate((request.json or {}).get('plate','')); token=get_token()
+    if not token: return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
+    if not plate: return jsonify(error='Digite a placa.'),400
     try:
-        c=db()
-        local=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
-        c.close()
-        if local:
-            return jsonify(data=dict(local), source='local')
-    except Exception:
-        try: c.close()
-        except Exception: pass
-
-    token=get_token()
-    if not token:
-        return jsonify(error='Primeiro configure o token Falcon em Configurações.'),400
-
-    headers={'Authorization':f'Bearer {token}','Accept':'application/json'}
-    endpoints=[
-        # Endpoint atual específico de placas da Falcon.
-        f'https://datahub.falcon-server.com.br/private/v1/placas/{plate}/search',
-        # Fallback para o endpoint legado documentado pela própria Falcon.
-        f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',
-    ]
-    last_error=''
-
-    for idx,url in enumerate(endpoints):
-        try:
-            r=requests.get(url,headers=headers,timeout=(6,12))
-            try:
-                data=r.json()
-            except Exception:
-                # Alguns gateways podem responder HTML em um 404 mesmo quando
-                # o endpoint novo não está publicado naquela rota. Nesse caso
-                # não encerramos a consulta: seguimos para o endpoint legado.
-                if idx == 0 and r.status_code in (404, 405, 500, 502, 503, 504):
-                    last_error=f'Endpoint principal respondeu HTTP {r.status_code} sem JSON.'
-                    continue
-                return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
-
-            if r.status_code == 401:
-                return jsonify(error='Token da Falcon inválido ou expirado.'),401
-            if r.status_code == 403:
-                return jsonify(error='A Falcon recusou o acesso deste token.'),403
-            if r.status_code == 404:
-                # Se o endpoint principal retornar 404 JSON, ele está dizendo
-                # que a placa não foi encontrada. No endpoint legado, também
-                # encerramos com a mesma mensagem.
-                return jsonify(error='Placa não encontrada na Falcon.',detalhes=data),404
-            if r.status_code == 429:
-                return jsonify(error='Limite de consultas da Falcon atingido. Tente novamente mais tarde.',detalhes=data),429
-            if r.status_code >= 500:
-                last_error=f'Falcon respondeu HTTP {r.status_code}.'
-                if idx == 0:
-                    continue
-                return jsonify(error='A Falcon está indisponível no momento. Você pode preencher os dados manualmente e salvar o veículo.',detalhes=data),502
-            if r.status_code >= 400:
-                return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
-
-            return jsonify(data=data.get('data',data), source='falcon')
-
-        except requests.exceptions.Timeout:
-            last_error='Tempo de resposta da Falcon esgotado.'
-            if idx == 0:
-                continue
-        except requests.exceptions.RequestException as e:
-            last_error=str(e)
-            if idx == 0:
-                continue
-
-    return jsonify(
-        error='Não foi possível consultar a Falcon agora. Tente novamente em alguns instantes ou preencha os dados do veículo manualmente.',
-        detalhes=last_error
-    ),504
+        r=requests.get(f'https://beta.falcon-server.com.br/data-hub/private/v1/vehicles/{plate}/search',headers={'Authorization':f'Bearer {token}'},timeout=15)
+        try: data=r.json()
+        except: return jsonify(error=f'Falcon retornou resposta não JSON (HTTP {r.status_code}).'),502
+        if r.status_code>=400: return jsonify(error=data.get('message') or data.get('error') or f'Falcon HTTP {r.status_code}',detalhes=data),r.status_code
+        return jsonify(data=data.get('data',data))
+    except Exception as e: return jsonify(error='Não foi possível conectar à Falcon: '+str(e)),502
 
 @app.post('/api/orders/create-complete')
 def create_order_complete():
@@ -745,19 +784,13 @@ def order_payment_add(order_id):
     o=c.execute('SELECT id FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
         c.close(); return jsonify(error='OS não encontrada'),404
-    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
-    total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-    already=float(c.execute('SELECT COALESCE(SUM(value),0) FROM order_payments WHERE order_id=?',(order_id,)).fetchone()[0] or 0)
-    if already + val > total + 0.01:
-        c.close(); return jsonify(error=f'Esse pagamento ultrapassa o restante da OS. Restante: {money(max(0,total-already))}.'),400
     date=str(d.get('date') or datetime.date.today().isoformat())
-    cur=c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(order_id,date,pay,val,notes))
-    allp=[tuple(x) for x in c.execute('SELECT payment,value,notes FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]
-    received=register_order_finance(c,order_id,allp)
-    label='Pago' if received >= total-0.01 else 'Pagamento parcial'
-    c.execute('UPDATE orders SET payment=? WHERE id=?',(label,order_id))
+    cur=c.execute(
+        'INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',
+        (order_id,date,pay,val,notes)
+    )
     c.commit(); c.close()
-    return jsonify(id=cur.lastrowid,order_id=order_id,date=date,payment=pay,value=val,notes=notes,received=received,total=total,remaining=max(0,total-received),status=label)
+    return jsonify(id=cur.lastrowid,order_id=order_id,date=date,payment=pay,value=val,notes=notes)
 
 @app.post('/api/orders/<int:order_id>/finish')
 def finish_order(order_id):
@@ -820,29 +853,91 @@ def get_company():
     return dict(row) if row else {}
 
 def company_header_html(comp):
-    logo=f"<img src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' style='max-height:75px;max-width:220px;object-fit:contain;margin-bottom:8px'>" if comp.get('logo_filename') else ''
-    name=comp.get('fantasy_name') or comp.get('legal_name') or 'NP Acessórios'
-    details=[]
-    if comp.get('cnpj'): details.append('CNPJ: '+comp['cnpj'])
-    addr=' '.join(x for x in [comp.get('street'),comp.get('number'),comp.get('complement')] if x)
-    city=' - '.join(x for x in [comp.get('neighborhood'),comp.get('city')+'/'+comp.get('uf') if comp.get('city') else comp.get('uf')] if x)
-    if addr: details.append(addr)
-    if city: details.append(city)
-    contact=' | '.join(x for x in [comp.get('phone'),comp.get('whatsapp'),comp.get('email')] if x)
-    if contact: details.append(contact)
-    return logo+f"<h1>{name}</h1><div class='company'>{'<br>'.join(details)}</div>"
+    logo = ''
+    if comp.get('logo_filename'):
+        logo = f"<img class='doc-logo' src='/uploads/company/{comp['logo_filename']}?v={int(datetime.datetime.now().timestamp())}' alt='Logo'>"
+    name = comp.get('fantasy_name') or comp.get('legal_name') or 'NP ACESSÓRIOS AUTOMOTIVOS'
+    address = ' '.join(x for x in [comp.get('street'), comp.get('number'), comp.get('complement')] if x)
+    city = ' - '.join(x for x in [comp.get('city'), comp.get('uf')] if x)
+    instagram = comp.get('instagram') or ''
+    website = comp.get('website') or ''
+    phone = comp.get('phone') or comp.get('whatsapp') or ''
+    details = [x for x in [address, city, phone, instagram, website] if x]
+    details_html = ''.join(f"<div>{x}</div>" for x in details)
+    return f"""
+    <header class='doc-header'>
+      <div class='doc-brand'>{logo}<div class='doc-company-name'>{name}</div></div>
+      <div class='doc-contact'>{details_html}</div>
+    </header>
+    """
+
+
+def document_footer_html(comp):
+    footer = (comp.get('footer_text') or '').strip() or 'NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!'
+    return f"<footer class='doc-footer'>{footer}</footer>"
+
+
+def _doc_money(value):
+    return f'R$ {float(value or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
+
 
 @app.get('/api/orders/<int:order_id>/receipt')
 def receipt_order(order_id):
-    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone(); items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
+    comp=get_company(); c=db()
+    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
     pays=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
-    v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None; c.close()
-    if not o: return 'OS não encontrada',404
-    money=lambda v: f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
-    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0)); received=sum(float(x['value'] or 0) for x in pays); balance=max(0,total-received)
-    rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{money(i['unit_price'])}</td><td>{money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
-    payrows=''.join(f"<tr><td>{x['payment']}</td><td>{money(x['value'])}</td></tr>" for x in pays)
-    return f'''<!doctype html><meta charset="utf-8"><title>Recibo #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:760px;margin:auto;color:#171717}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse;margin-top:12px}}td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:18px}}.paid{{font-size:18px;font-weight:bold}}.box{{background:#f7f7f7;border-radius:10px;padding:12px;margin-top:15px}}@media print{{button{{display:none}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>RECIBO DE PAGAMENTO</h2><p><b>Recibo referente à OS:</b> #{order_id}<br><b>Cliente:</b> {o['customer'] or ''}<br><b>Veículo:</b> {((v['brand']+' '+v['model']).strip() if v else '')} — {o['plate'] or ''}<br><b>Data do recebimento:</b> {datetime.date.today().strftime('%d/%m/%Y')}</p><div class="box"><b>Serviços / itens</b><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item registrado.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(total)}</p><div class="total">Total pago: {money(received)}</div></div><div class="box"><b>Formas de pagamento</b><table><tr><th>Forma</th><th>Valor</th></tr>{payrows or '<tr><td colspan=2>Não informado</td></tr>'}</table></div><p class="paid">Status: {'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</p><p>Este recibo comprova o recebimento dos valores acima referentes à OS #{order_id}.</p><p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
+    v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(o['plate'],)).fetchone() if o else None
+    if not v and o and str(o['customer'] or '').strip():
+        v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
+    if not o:
+        c.close()
+        return 'OS não encontrada',404
+    # Número exibido da OS é sequencial e independente do ID interno do banco.
+    # Calcula antes de fechar a conexão para evitar erro 500 no recibo.
+    seq_rows=c.execute('SELECT id FROM orders ORDER BY id').fetchall()
+    display_map={int(r['id']): i+1 for i,r in enumerate(seq_rows)}
+    display_number=display_map.get(int(order_id), order_id)
+    c.close()
+    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+    received=sum(float(x['value'] or 0) for x in pays)
+    balance=max(0,total-received)
+    if items:
+        rows=''.join(f"<tr><td>{(i['description'] or '')}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    else:
+        # OS antigas podem ter o serviço salvo apenas no campo orders.service,
+        # sem registros na tabela order_items. No recibo, use essa informação
+        # como fallback para nunca deixar o serviço em branco.
+        legacy_service=str(o['service'] or '').strip()
+        if legacy_service:
+            rows=f"<tr><td>{legacy_service}</td><td>1</td><td>{_doc_money(total)}</td><td>{_doc_money(total)}</td></tr>"
+        else:
+            rows='<tr><td colspan="4">Nenhum item registrado.</td></tr>'
+    payrows=''.join(f"<tr><td>{x['payment']}</td><td>{_doc_money(x['value'])}</td></tr>" for x in pays)
+    brand=(v['brand'] if v else '') or ''
+    model=(v['model'] if v else '') or ''
+    year=(v['year'] if v else '') or ''
+    color=(v['color'] if v else '') or ''
+    plate=o['plate'] or ''
+    date_today=datetime.date.today().strftime('%d/%m/%Y')
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Recibo #{display_number} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:220px;max-height:82px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.55;color:#444;font-size:11px}}
+.doc-title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:27px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.doc-number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:14px;color:#ed1c24;text-align:center;min-width:125px}}.doc-date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.info-box{{border:1px solid #d9dce0;border-radius:5px;overflow:hidden}}.info-title{{padding:7px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.info-body{{display:grid;grid-template-columns:82px 1fr}}.info-row{{display:contents}}.info-row>span{{padding:6px 8px;border-bottom:1px solid #ececec}}.info-row>span:first-child{{font-weight:700;color:#555;background:#fafafa}}
+.items{{width:100%;border-collapse:collapse;margin-top:12px}}.items th{{background:#202124;color:#fff;padding:8px;text-align:left;font-size:10px}}.items td{{padding:8px;border:1px solid #e0e0e0;font-size:11px}}.items th:nth-child(n+3),.items td:nth-child(n+3){{text-align:right}}
+.bottom-grid{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.box{{border:1px solid #d9dce0;border-radius:5px;padding:10px}}.box-title{{font-weight:800;font-size:11px;margin-bottom:7px}}.notes{{min-height:72px;line-height:1.5;color:#333}}.summary div{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}}.summary .total{{margin:7px -10px -10px;padding:10px;background:#ed1c24;color:#fff;font-size:16px;font-weight:800}}
+.signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:70px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
+@media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
+</style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
+<div class='doc-title-row'><h1>RECIBO</h1><div><div class='doc-number'>Nº {display_number:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{(v['phone'] if v and v['phone'] else '')}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div></div></div></div>
+<table class='items'><tr><th>DESCRIÇÃO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
+<div class='bottom-grid'><div class='box'><div class='box-title'>FORMA DE PAGAMENTO</div><table style='width:100%;border-collapse:collapse'><tr><th style='text-align:left;padding:4px 0'>Forma</th><th style='text-align:right;padding:4px 0'>Valor</th></tr>{payrows or '<tr><td colspan="2">Não informado</td></tr>'}</table><div style='margin-top:12px;font-size:11px'>Status: <b>{'PAGO' if balance<=0.01 else 'PAGAMENTO PARCIAL'}</b></div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL PAGO</b><span>{_doc_money(received)}</span></div></div></div>
+<div class='box' style='margin-top:12px'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div>
+<div class='signature-row'><div></div><div class='signature'>ASSINATURA</div></div>{document_footer_html(comp)}</div>"""
 
 @app.get('/api/orders/<int:order_id>/whatsapp-complete')
 def whatsapp_complete(order_id):
@@ -853,31 +948,46 @@ def whatsapp_complete(order_id):
 
 @app.get('/api/orders/<int:order_id>/print')
 def print_order(order_id):
-    comp=get_company(); c=db(); o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+    comp=get_company(); c=db()
+    o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     items=[dict(x) for x in c.execute('SELECT * FROM order_items WHERE order_id=? ORDER BY id',(order_id,)).fetchall()] if o else []
     photos=[dict(x) for x in c.execute('SELECT * FROM order_photos WHERE order_id=? ORDER BY area,moment,id',(order_id,)).fetchall()] if o else []
     v=None
     if o:
         plate=str(o['plate'] or '').strip()
-        if plate:
-            v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
+        if plate: v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
         if not v and str(o['customer'] or '').strip():
             v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(o['customer'] or '').strip(),)).fetchone()
     c.close()
     if not o: return 'OS não encontrada',404
-    money=lambda v: f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
-    rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{money(i['unit_price'])}</td><td>{money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
-    photos_html=''.join(f"<div class='photo'><div><b>{p['area']} — {p['moment']}</b></div><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
-    brand=(v['brand'] if v else '') or ''
-    model=(v['model'] if v else '') or ''
-    year=(v['year'] if v else '') or ''
-    color=(v['color'] if v else '') or ''
-    vtype=(v['type'] if v else '') or ''
-    uf=(v['uf'] if v else '') or ''
-    vehicle_line=f"<b>Veículo:</b> {brand} {model} — {year} — {color}<br><b>Placa:</b> {o['plate'] or ''}"
-    extra=''.join([x for x in [f"<b>Tipo:</b> {vtype}" if vtype else '', f"<b>UF:</b> {uf}" if uf else '']])
-    if extra: vehicle_line += '<br>'+extra
-    return f'''<!doctype html><meta charset="utf-8"><title>OS #{order_id} - NP Acessórios</title><style>body{{font-family:Arial;padding:30px;max-width:900px;margin:auto}}h1{{border-bottom:3px solid #d71920;padding-bottom:10px}}table{{width:100%;border-collapse:collapse}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}.vehicle{{background:#f7f7f7;border:1px solid #ddd;border-radius:10px;padding:14px;line-height:1.7;margin:15px 0}}.total{{font-size:22px;font-weight:bold;text-align:right;margin-top:20px}}.photos{{display:grid;grid-template-columns:1fr 1fr;gap:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:8px;break-inside:avoid}}.photo img{{width:100%;height:240px;object-fit:cover;margin-top:6px}}@media print{{button{{display:none}}}}@media(max-width:650px){{.photos{{grid-template-columns:1fr}}}}</style><button onclick="print()">Imprimir / Salvar PDF</button>{company_header_html(comp)}<h2>ORDEM DE SERVIÇO #{order_id}</h2><p><b>Cliente:</b> {o['customer'] or ''}</p><div class="vehicle"><b>Dados do veículo</b><br>{vehicle_line}<br><b>KM:</b> {o['km'] or 0}</div><p><b>Data:</b> {o['date'] or ''}<br><b>Pagamento:</b> {o['payment'] or 'Não informado'}<br><b>Status:</b> {o['status'] or ''}</p><table><tr><th>Descrição</th><th>Qtd.</th><th>Unitário</th><th>Total</th></tr>{rows or '<tr><td colspan=4>Nenhum item adicional.</td></tr>'}</table><p><b>Subtotal:</b> {money(o['value'])}<br><b>Desconto:</b> {money(o['discount'])}<br><b>Total da OS:</b> {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</p><p><b>Observações:</b><br>{(o['notes'] or '').replace(chr(10),'<br>')}</p><div class="total">Total: {money(max(0,float(o['value'] or 0)-float(o['discount'] or 0)))}</div>{'<h2>📷 Registro fotográfico</h2><div class="photos">'+photos_html+'</div>' if photos_html else ''}<p style="margin-top:70px">Assinatura do cliente: __________________________________________</p>'''
+    # Mesma numeração sequencial exibida na lista de OS. O ID interno permanece intacto.
+    cnum=db(); seq_rows=cnum.execute('SELECT id FROM orders ORDER BY id').fetchall(); cnum.close()
+    display_map={int(r['id']): i+1 for i,r in enumerate(seq_rows)}
+    display_number=display_map.get(int(order_id), order_id)
+    total=max(0,float(o['value'] or 0)-float(o['discount'] or 0))
+    rows=''.join(f"<tr><td>{i['description'] or ''}</td><td>{i['qty']}</td><td>{_doc_money(i['unit_price'])}</td><td>{_doc_money(float(i['qty'] or 0)*float(i['unit_price'] or 0))}</td></tr>" for i in items)
+    photos_html=''.join(f"<div class='photo'><b>{p['area']} — {p['moment']}</b><img src='/uploads/orders/{p['filename']}'></div>" for p in photos)
+    brand=(v['brand'] if v else '') or ''; model=(v['model'] if v else '') or ''; year=(v['year'] if v else '') or ''; color=(v['color'] if v else '') or ''
+    plate=o['plate'] or ''; phone=(v['phone'] if v else '') or ''; date_today=datetime.date.today().strftime('%d/%m/%Y')
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>OS #{display_number} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 52px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:220px;max-height:82px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.55;color:#444;font-size:11px}}
+.doc-title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:27px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.doc-number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:14px;color:#ed1c24;text-align:center;min-width:125px}}.doc-date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.info-box{{border:1px solid #d9dce0;border-radius:5px;overflow:hidden}}.info-title{{padding:7px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.info-body{{display:grid;grid-template-columns:82px 1fr}}.info-row{{display:contents}}.info-row>span{{padding:6px 8px;border-bottom:1px solid #ececec}}.info-row>span:first-child{{font-weight:700;color:#555;background:#fafafa}}
+.items{{width:100%;border-collapse:collapse;margin-top:12px}}.items th{{background:#202124;color:#fff;padding:8px;text-align:left;font-size:10px}}.items td{{padding:8px;border:1px solid #e0e0e0;font-size:11px}}.items th:nth-child(n+3),.items td:nth-child(n+3){{text-align:right}}
+.bottom-grid{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.box{{border:1px solid #d9dce0;border-radius:5px;padding:10px}}.box-title{{font-weight:800;font-size:11px;margin-bottom:7px}}.notes{{min-height:72px;line-height:1.5;color:#333}}.summary div{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #eee}}.summary .total{{margin:7px -10px -10px;padding:10px;background:#ed1c24;color:#fff;font-size:16px;font-weight:800}}
+.photos{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}}.photo{{border:1px solid #ddd;padding:8px;border-radius:5px;break-inside:avoid}}.photo img{{width:100%;height:210px;object-fit:cover;margin-top:6px}}
+.signature-row{{display:grid;grid-template-columns:1fr 1fr;gap:50px;margin-top:55px}}.signature{{border-top:1px solid #555;text-align:center;padding-top:7px;font-size:10px;color:#444}}.doc-footer{{position:absolute;left:0;right:0;bottom:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}.print-btn{{margin:0 auto 12px;display:block;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:8px 14px;font-weight:700}}
+@media print{{.print-btn{{display:none}}.sheet{{min-height:0;padding-bottom:42px}}}}
+</style><div class='sheet'><button class='print-btn' onclick='print()'>Imprimir / Salvar PDF</button>{company_header_html(comp)}
+<div class='doc-title-row'><h1>ORDEM DE <span>SERVIÇO</span></h1><div><div class='doc-number'>Nº {display_number:05d}</div><div class='doc-date'>DATA: {date_today}</div></div></div>
+<div class='grid2'><div class='info-box'><div class='info-title'>DADOS DO CLIENTE</div><div class='info-body'><div class='info-row'><span>Nome</span><span>{o['customer'] or ''}</span></div><div class='info-row'><span>WhatsApp</span><span>{phone}</span></div></div></div><div class='info-box'><div class='info-title'>DADOS DO VEÍCULO</div><div class='info-body'><div class='info-row'><span>Marca</span><span>{brand}</span></div><div class='info-row'><span>Modelo</span><span>{model}</span></div><div class='info-row'><span>Placa</span><span>{plate}</span></div><div class='info-row'><span>Ano / Cor</span><span>{year}{' / '+color if color else ''}</span></div><div class='info-row'><span>KM</span><span>{o['km'] or 0}</span></div></div></div></div>
+<table class='items'><tr><th>SERVIÇO / PRODUTO</th><th>QTD.</th><th>VALOR UNIT.</th><th>VALOR TOTAL</th></tr>{rows or '<tr><td colspan="4">Nenhum item registrado.</td></tr>'}</table>
+<div class='bottom-grid'><div class='box'><div class='box-title'>OBSERVAÇÕES</div><div class='notes'>{(o['notes'] or '').replace(chr(10),'<br>') or '—'}</div></div><div class='box summary'><div><b>SUBTOTAL</b><span>{_doc_money(o['value'])}</span></div><div><b>DESCONTO</b><span>{_doc_money(o['discount'])}</span></div><div class='total'><b>TOTAL</b><span>{_doc_money(total)}</span></div></div></div>
+{('<div class="box" style="margin-top:12px"><div class="box-title">REGISTRO FOTOGRÁFICO</div><div class="photos">'+photos_html+'</div></div>') if photos_html else ''}
+<div class='signature-row'><div class='signature'>ASSINATURA DO CLIENTE</div><div class='signature'>ASSINATURA DA EMPRESA</div></div>{document_footer_html(comp)}</div>"""
 
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
