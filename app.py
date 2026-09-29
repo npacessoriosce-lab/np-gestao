@@ -149,6 +149,10 @@ def audit(c, action, entity, entity_id=0, description=''):
     # Auditoria desativada nesta versão para manter o sistema simples.
     return None
 
+def cleanup_orphan_order_finance(c):
+    """Remove recebimentos de OS que já não existem mais."""
+    c.execute("DELETE FROM finance WHERE kind='Entrada' AND order_id>0 AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.id=finance.order_id)")
+
 def init():
     if USE_POSTGRES:
         c=db()
@@ -438,6 +442,9 @@ def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db()
     if request.method=='GET':
+        if table=='finance':
+            cleanup_orphan_order_finance(c)
+            c.commit()
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
         rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
@@ -1176,6 +1183,7 @@ def customer_history(customer):
 def report():
     month=request.args.get('month') or datetime.date.today().strftime('%Y-%m')
     c=db()
+    cleanup_orphan_order_finance(c); c.commit()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
     services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
@@ -1186,7 +1194,7 @@ def report():
 
 @app.get('/api/dashboard')
 def dashboard():
-    c=db(); today=datetime.date.today().isoformat(); month=today[:7]
+    c=db(); cleanup_orphan_order_finance(c); c.commit(); today=datetime.date.today().isoformat(); month=today[:7]
     q=lambda s,a=(): c.execute(s,a).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
     result={'veiculos':q('SELECT COUNT(*) FROM vehicles'),'agendamentos_hoje':q("SELECT COUNT(*) FROM appointments WHERE date=? AND status='Agendado'",(today,)),'os_abertas':q("SELECT COUNT(*) FROM orders WHERE status IN ('Aberta','Em andamento')"),'faturamento_mes':ent,'despesas_mes':out,'lucro_mes':ent-out,'estoque_baixo':q('SELECT COUNT(*) FROM stock WHERE qty<=min_qty'),'pos_venda_pendente':q("SELECT COUNT(*) FROM followups WHERE status='Pendente' AND due_date<=?",(today,))}
