@@ -194,6 +194,9 @@ def init():
         if not c.execute('SELECT 1 FROM users WHERE username=? LIMIT 1',(username,)).fetchone():
             c.execute("INSERT INTO users(username,password,name,role,active,created_at) VALUES(?,?,?,?,?,?)",(username,password,name,role,1,now))
     c.execute("INSERT OR IGNORE INTO company(id,fantasy_name) VALUES(1,'NP Acessórios')")
+    # Remove recebimentos de OS que já foram excluídas, evitando entradas órfãs no Financeiro.
+    # Não afeta lançamentos manuais (order_id=0) nem entradas vinculadas a OS existentes.
+    c.execute("DELETE FROM finance WHERE order_id IS NOT NULL AND order_id<>0 AND order_id NOT IN (SELECT id FROM orders)")
     c.commit(); c.close()
 init()
 
