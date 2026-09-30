@@ -1120,4 +1120,77 @@ def dashboard():
     result={'veiculos':q('SELECT COUNT(*) FROM vehicles'),'agendamentos_hoje':q("SELECT COUNT(*) FROM appointments WHERE date=? AND status='Agendado'",(today,)),'os_abertas':q("SELECT COUNT(*) FROM orders WHERE status IN ('Aberta','Em andamento')"),'faturamento_mes':ent,'despesas_mes':out,'lucro_mes':ent-out,'estoque_baixo':q('SELECT COUNT(*) FROM stock WHERE qty<=min_qty'),'pos_venda_pendente':q("SELECT COUNT(*) FROM followups WHERE status='Pendente' AND due_date<=?",(today,))}
     c.close(); return jsonify(result)
 
+@app.get('/api/orders/print-all')
+def print_all_orders():
+    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip()
+    c=db()
+    orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
+    pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
+    vehicles=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
+    c.close()
+    by_plate={str(v.get('plate') or '').strip().upper():v for v in vehicles if v.get('plate')}
+    by_customer={str(v.get('customer') or '').strip().upper():v for v in vehicles if v.get('customer')}
+    paymap={}
+    for p in pays: paymap.setdefault(int(p['order_id']),[]).append(dict(p))
+    seq={int(o['id']):i+1 for i,o in enumerate(orders)}
+    rows=[]; total_value=total_received=0.0
+    for o in orders:
+        total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0)); plist=paymap.get(int(o['id']),[]); received=sum(float(x.get('value') or 0) for x in plist); pending=max(0,total-received)
+        if total<=0 or received>=total-0.01: pstatus='Pago'; pclass='paid'
+        elif received>0.01: pstatus='Pagamento parcial'; pclass='partial'
+        else: pstatus='Pendente'; pclass='pending'
+        if payment_filter and payment_filter!=('Parcial' if pstatus=='Pagamento parcial' else pstatus): continue
+        if status_filter and str(o.get('status') or '')!=status_filter: continue
+        v=by_plate.get(str(o.get('plate') or '').strip().upper()) or by_customer.get(str(o.get('customer') or '').strip().upper()) or {}
+        vehicle=' · '.join(str(v.get(k) or '') for k in ('brand','model','year') if str(v.get(k) or '').strip()) or 'Veículo não informado'
+        rows.append((o,vehicle,total,received,pending,pstatus,pclass)); total_value+=total; total_received+=received
+    total_pending=max(0,total_value-total_received)
+    trs=''.join(f"<tr><td>#{seq.get(int(o['id']),o['id']):05d}</td><td>{o.get('date') or '-'}</td><td><b>{o.get('customer') or '-'}</b><br><small>{vehicle} · Placa: {o.get('plate') or '-'}</small></td><td>{o.get('service') or '-'}</td><td class='money'>{_doc_money(float(o.get('value') or 0))}</td><td class='money'>{_doc_money(float(o.get('discount') or 0))}</td><td class='money'><b>{_doc_money(total)}</b></td><td class='money'>{_doc_money(received)}</td><td class='money'>{_doc_money(pending)}</td><td><span class='status {pclass}'>{pstatus}</span></td></tr>" for o,vehicle,total,received,pending,pstatus,pclass in rows)
+    if not trs: trs='<tr><td colspan="10" style="text-align:center;padding:25px">Nenhuma OS encontrada com os filtros selecionados.</td></tr>'
+    filters=[]
+    if status_filter: filters.append('Status: '+status_filter)
+    if payment_filter: filters.append('Pagamento: '+('Pagamento parcial' if payment_filter=='Parcial' else payment_filter))
+    subtitle=' · '.join(filters) if filters else 'Todas as Ordens de Serviço'
+    html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral de OS - NP Acessórios</title><style>
+@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}small{{color:#666;font-size:7px}}.status{{display:inline-block;padding:4px 6px;border-radius:10px;font-weight:700;white-space:nowrap}}.paid{{background:#def5e7;color:#16733c}}.partial{{background:#fff0cf;color:#8a5a00}}.pending{{background:#ffe1e1;color:#a11}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
+</style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DAS ORDENS DE SERVIÇO</h1><div class='sub'>{subtitle} · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total das OS</b><strong>{_doc_money(total_value)}</strong></div><div class='card'><b>Total recebido</b><strong>{_doc_money(total_received)}</strong></div><div class='card'><b>Total pendente</b><strong>{_doc_money(total_pending)}</strong></div></div><table><thead><tr><th>OS</th><th>DATA</th><th>CLIENTE / VEÍCULO</th><th>SERVIÇO</th><th>VALOR ORIGINAL</th><th>DESCONTO</th><th>TOTAL</th><th>RECEBIDO</th><th>PENDENTE</th><th>STATUS</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
+    return html
+
+
+@app.get('/api/finance/print-all')
+def print_all_finance():
+    comp=get_company()
+    start_date=str(request.args.get('start') or '').strip()
+    end_date=str(request.args.get('end') or '').strip()
+    kind_filter=str(request.args.get('kind') or '').strip()
+    status_filter=str(request.args.get('status') or '').strip()
+    payment_filter=str(request.args.get('payment') or '').strip()
+    c=db()
+    rows=[dict(x) for x in c.execute('SELECT * FROM finance ORDER BY date ASC,id ASC').fetchall()]
+    c.close()
+    filtered=[]
+    for r in rows:
+        d=str(r.get('date') or '')
+        if start_date and d < start_date: continue
+        if end_date and d > end_date: continue
+        if kind_filter and str(r.get('kind') or '') != kind_filter: continue
+        if status_filter and str(r.get('status') or 'Pago') != status_filter: continue
+        if payment_filter and str(r.get('payment') or 'Não informado') != payment_filter: continue
+        filtered.append(r)
+    ent=sum(float(r.get('value') or 0) for r in filtered if r.get('kind')=='Entrada')
+    out=sum(float(r.get('value') or 0) for r in filtered if r.get('kind')=='Saída' and (str(r.get('category') or '')!='Conta Fixa' or str(r.get('status') or 'Pago')=='Pago'))
+    balance=ent-out
+    trs=''.join(f"<tr><td>{r.get('date') or '-'}</td><td>{'Entrada' if r.get('kind')=='Entrada' else 'Saída'}</td><td>{r.get('description') or '-'}</td><td>{r.get('category') or '-'}</td><td>{r.get('payment') or 'Não informado'}</td><td>{r.get('status') or 'Pago'}</td><td class='money'>{_doc_money(r.get('value') or 0)}</td></tr>" for r in filtered)
+    if not trs: trs='<tr><td colspan="7" style="text-align:center;padding:25px">Nenhum lançamento encontrado com os filtros selecionados.</td></tr>'
+    filters=[]
+    if start_date or end_date: filters.append(f"Período: {start_date or 'início'} a {end_date or 'fim'}")
+    if kind_filter: filters.append('Tipo: '+kind_filter)
+    if status_filter: filters.append('Status: '+status_filter)
+    if payment_filter: filters.append('Pagamento: '+payment_filter)
+    subtitle=' · '.join(filters) if filters else 'Todos os lançamentos do Financeiro'
+    html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral Financeiro - NP Acessórios</title><style>
+@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:10px}}.sheet{{max-width:1100px;margin:0 auto;padding:8px 8px 45px;position:relative}}.top{{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #171717;padding:5px 0 10px}}.top img{{max-width:180px;max-height:65px;object-fit:contain}}h1{{font-size:22px;margin:0}}.sub{{color:#555;margin-top:4px;font-size:10px}}.summary{{display:flex;gap:8px;margin:12px 0}}.card{{flex:1;border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#555;margin-bottom:4px}}.num{{font-size:15px;font-weight:800}}table{{width:100%;border-collapse:collapse;margin-top:10px}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:9px}}td{{padding:6px;border:1px solid #ddd;vertical-align:top}}.money{{text-align:right;white-space:nowrap}}.footer{{position:fixed;bottom:5mm;left:0;right:0;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700;font-size:9px}}.print{{display:block;margin:0 auto 10px;background:#ed1c24;color:#fff;border:0;border-radius:4px;padding:7px 12px;font-weight:700}}@media print{{.print{{display:none}}}}
+</style><div class='sheet'><button class='print' onclick='print()'>Imprimir / Salvar PDF</button><div class='top'>{company_header_html(comp)}<div><h1>RELATÓRIO GERAL DO FINANCEIRO</h1><div class='sub'>{subtitle}</div></div></div><div class='summary'><div class='card'><b>ENTRADAS</b><div class='num'>{_doc_money(ent)}</div></div><div class='card'><b>DESPESAS PAGAS</b><div class='num'>{_doc_money(out)}</div></div><div class='card'><b>SALDO</b><div class='num'>{_doc_money(balance)}</div></div></div><table><tr><th>DATA</th><th>TIPO</th><th>DESCRIÇÃO</th><th>CATEGORIA</th><th>FORMA</th><th>STATUS</th><th>VALOR</th></tr>{trs}</table>{document_footer_html(comp)}</div></html>"""
+    return html
+
 if __name__=='__main__': app.run(host='0.0.0.0',port=5000,debug=False)
