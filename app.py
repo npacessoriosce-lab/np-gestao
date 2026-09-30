@@ -149,10 +149,6 @@ def audit(c, action, entity, entity_id=0, description=''):
     # Auditoria desativada nesta versão para manter o sistema simples.
     return None
 
-def cleanup_orphan_order_finance(c):
-    """Remove recebimentos de OS que já não existem mais."""
-    c.execute("DELETE FROM finance WHERE kind='Entrada' AND order_id>0 AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.id=finance.order_id)")
-
 def init():
     if USE_POSTGRES:
         c=db()
@@ -190,7 +186,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -198,9 +194,6 @@ def init():
         if not c.execute('SELECT 1 FROM users WHERE username=? LIMIT 1',(username,)).fetchone():
             c.execute("INSERT INTO users(username,password,name,role,active,created_at) VALUES(?,?,?,?,?,?)",(username,password,name,role,1,now))
     c.execute("INSERT OR IGNORE INTO company(id,fantasy_name) VALUES(1,'NP Acessórios')")
-    # Remove recebimentos de OS que já foram excluídas, evitando entradas órfãs no Financeiro.
-    # Não afeta lançamentos manuais (order_id=0) nem entradas vinculadas a OS existentes.
-    c.execute("DELETE FROM finance WHERE order_id IS NOT NULL AND order_id<>0 AND order_id NOT IN (SELECT id FROM orders)")
     c.commit(); c.close()
 init()
 
@@ -437,14 +430,51 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+def ensure_recurring_fixed(c):
+    """Cria automaticamente a parcela mensal atual das contas fixas recorrentes."""
+    try:
+        today=datetime.date.today()
+        ym=today.strftime('%Y-%m')
+        # Toda Conta Fixa cadastrada passa a ser mensal por padrão.
+        legacy=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND (recurring IS NULL OR recurring=0) ORDER BY id ASC").fetchall()
+        for r0 in legacy:
+            try: day0=int(str(r0['date'] or '')[-2:])
+            except: day0=today.day
+            c.execute("UPDATE finance SET recurring=1, recurrence_day=?, recurrence_parent=? WHERE id=?",(day0,int(r0['id']),int(r0['id'])))
+        rows=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurring=1 ORDER BY id ASC").fetchall()
+        for r in rows:
+            parent=int(r['recurrence_parent'] or 0)
+            # A própria linha inicial é o modelo. Linhas geradas apontam para ela.
+            template_id=parent or int(r['id'])
+            if parent and int(r['id'])!=template_id:
+                continue
+            day=int(r['recurrence_day'] or 0)
+            if day<=0:
+                try: day=int(str(r['date'] or '')[-2:])
+                except: day=today.day
+            # Não gera outra parcela no mesmo mês do modelo.
+            if str(r['date'] or '')[:7]==ym:
+                continue
+            exists=c.execute("SELECT id FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurrence_parent=? AND substr(date,1,7)=? LIMIT 1",(template_id,ym)).fetchone()
+            if exists:
+                continue
+            import calendar
+            last=calendar.monthrange(today.year,today.month)[1]
+            d=min(max(day,1),last)
+            date=f'{ym}-{d:02d}'
+            c.execute("INSERT INTO finance(date,kind,description,value,payment,category,order_id,status,recurring,recurrence_day,recurrence_parent) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                      (date,'Saída',r['description'],r['value'],r['payment'],'Conta Fixa',0,'Pendente',1,day,template_id))
+        c.commit()
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
     c=db()
     if request.method=='GET':
-        if table=='finance':
-            cleanup_orphan_order_finance(c)
-            c.commit()
+        if table=='finance': ensure_recurring_fixed(c)
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
         rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
@@ -548,25 +578,7 @@ def update_item(table,item_id):
 @app.delete('/api/<table>/<int:item_id>')
 def delete_item(table,item_id):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
-    c=db()
-    try:
-        # Uma OS pode ter recebido pagamentos que foram lançados no Financeiro.
-        # Ao excluir a OS, esses recebimentos vinculados precisam ser removidos
-        # junto, para não deixar entradas órfãs no Financeiro.
-        if table=='orders':
-            c.execute("DELETE FROM finance WHERE order_id=?",(item_id,))
-            c.execute("DELETE FROM order_payments WHERE order_id=?",(item_id,))
-        audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}')
-        c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,))
-        c.commit()
-    except Exception as e:
-        try: c.rollback()
-        except Exception: pass
-        c.close()
-        app.logger.exception('Erro ao excluir %s %s', table, item_id)
-        return jsonify(error=f'Não foi possível excluir: {e}'),500
-    c.close()
-    return jsonify(ok=True)
+    c=db(); audit(c,'Excluiu',table,item_id,f'Registro {item_id} excluído em {table}'); c.execute(f'DELETE FROM {table} WHERE id=?',(item_id,)); c.commit(); c.close(); return jsonify(ok=True)
 
 def register_order_finance(c, order_id, payments=None):
     """Register the confirmed OS payment in finance without duplicating entries."""
@@ -797,70 +809,28 @@ def order_items(order_id):
 def order_payments(order_id):
     c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
 
-@app.get('/api/orders/payment-statuses')
-def order_payment_statuses():
-    c=db()
-    orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
-    pays=c.execute('SELECT order_id,COALESCE(SUM(value),0) received FROM order_payments GROUP BY order_id').fetchall()
-    received_map={int(x['order_id']):float(x['received'] or 0) for x in pays}
-    out={}
-    for o in orders:
-        oid=int(o['id'])
-        total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-        received=received_map.get(oid,0.0)
-        pending=max(0.0,total-received)
-        if total<=0:
-            status='Pago'; label='Pago'
-        elif received>=total-0.01:
-            status='Pago'; label='Pago'
-        elif received>0.01:
-            status='Parcial'; label='Pagamento parcial'
-        else:
-            status='Pendente'; label='Pendente'
-        out[str(oid)]={'status':status,'label':label,'total':total,'received':received,'pending':pending}
-    c.close()
-    return jsonify(out)
-
 @app.post('/api/orders/<int:order_id>/payments')
 def order_payment_add(order_id):
     d=request.json or {}
     pay=str(d.get('payment') or '').strip()
-    try: val=float(d.get('value') or 0)
-    except Exception: val=0.0
+    try:
+        val=float(d.get('value') or 0)
+    except Exception:
+        val=0.0
     notes=str(d.get('notes') or '').strip()
     if not pay or val <= 0:
         return jsonify(error='Informe a forma de pagamento e um valor maior que zero.'),400
     c=db()
-    try:
-        o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
-        if not o:
-            c.close(); return jsonify(error='OS não encontrada'),404
-        if o['status']=='Cancelada':
-            c.close(); return jsonify(error='Não é possível registrar pagamento em uma OS cancelada.'),400
-        total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-        rr=c.execute('SELECT COALESCE(SUM(value),0) received FROM order_payments WHERE order_id=?',(order_id,)).fetchone()
-        received=float(rr['received'] or 0)
-        remaining=max(0.0,total-received)
-        if val>remaining+0.01:
-            c.close(); return jsonify(error=f'O pagamento de {money(val)} ultrapassa o restante de {money(remaining)}.'),400
-        date=str(d.get('date') or datetime.date.today().isoformat())
-        cur=c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(order_id,date,pay,val,notes))
-        new_received=received+val
-        pending=max(0.0,total-new_received)
-        status_label='Pago' if pending<=0.01 else 'Pagamento parcial'
-        allp=[dict(x) for x in c.execute('SELECT payment,value,notes FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]
-        register_order_finance(c,order_id,allp)
-        c.execute('UPDATE orders SET payment=? WHERE id=?',(status_label,order_id))
-        audit(c,'Recebeu','orders',order_id,f'Pagamento registrado: {pay} {money(val)}')
-        c.commit()
-        result={'id':cur.lastrowid,'order_id':order_id,'date':date,'payment':pay,'value':val,'notes':notes,'total':total,'received':new_received,'pending':pending,'status':'Pago' if pending<=0.01 else 'Parcial','label':status_label}
-        c.close(); return jsonify(result)
-    except Exception as e:
-        try:c.rollback()
-        except:pass
-        try:c.close()
-        except:pass
-        return jsonify(error='Não foi possível registrar o pagamento: '+str(e)),500
+    o=c.execute('SELECT id FROM orders WHERE id=?',(order_id,)).fetchone()
+    if not o:
+        c.close(); return jsonify(error='OS não encontrada'),404
+    date=str(d.get('date') or datetime.date.today().isoformat())
+    cur=c.execute(
+        'INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',
+        (order_id,date,pay,val,notes)
+    )
+    c.commit(); c.close()
+    return jsonify(id=cur.lastrowid,order_id=order_id,date=date,payment=pay,value=val,notes=notes)
 
 @app.post('/api/orders/<int:order_id>/finish')
 def finish_order(order_id):
@@ -1059,58 +1029,6 @@ def print_order(order_id):
 {('<div class="box" style="margin-top:12px"><div class="box-title">REGISTRO FOTOGRÁFICO</div><div class="photos">'+photos_html+'</div></div>') if photos_html else ''}
 <div class='signature-row'><div class='signature'>ASSINATURA DO CLIENTE</div><div class='signature'>ASSINATURA DA EMPRESA</div></div>{document_footer_html(comp)}</div>"""
 
-@app.get('/api/orders/print-all')
-def print_all_orders():
-    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip()
-    c=db()
-    orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
-    pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
-    vehicles=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
-    c.close()
-    by_plate={str(v.get('plate') or '').strip().upper():v for v in vehicles if v.get('plate')}
-    by_customer={str(v.get('customer') or '').strip().upper():v for v in vehicles if v.get('customer')}
-    paymap={}
-    for p in pays: paymap.setdefault(int(p['order_id']),[]).append(dict(p))
-    seq={int(o['id']):i+1 for i,o in enumerate(orders)}
-    rows=[]; total_value=total_received=0.0
-    for o in orders:
-        total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0)); plist=paymap.get(int(o['id']),[]); received=sum(float(x.get('value') or 0) for x in plist); pending=max(0,total-received)
-        if total<=0 or received>=total-0.01: pstatus='Pago'; pclass='paid'
-        elif received>0.01: pstatus='Pagamento parcial'; pclass='partial'
-        else: pstatus='Pendente'; pclass='pending'
-        if payment_filter and payment_filter!=('Parcial' if pstatus=='Pagamento parcial' else pstatus): continue
-        if status_filter and str(o.get('status') or '')!=status_filter: continue
-        v=by_plate.get(str(o.get('plate') or '').strip().upper()) or by_customer.get(str(o.get('customer') or '').strip().upper()) or {}
-        vehicle=' · '.join(str(v.get(k) or '') for k in ('brand','model','year') if str(v.get(k) or '').strip()) or 'Veículo não informado'
-        rows.append((o,vehicle,total,received,pending,pstatus,pclass)); total_value+=total; total_received+=received
-    total_pending=max(0,total_value-total_received)
-    trs=''.join(f"<tr><td>#{seq.get(int(o['id']),o['id']):05d}</td><td>{o.get('date') or '-'}</td><td><b>{o.get('customer') or '-'}</b><br><small>{vehicle} · Placa: {o.get('plate') or '-'}</small></td><td>{o.get('service') or '-'}</td><td class='money'>{_doc_money(float(o.get('value') or 0))}</td><td class='money'>{_doc_money(float(o.get('discount') or 0))}</td><td class='money'><b>{_doc_money(total)}</b></td><td class='money'>{_doc_money(received)}</td><td class='money'>{_doc_money(pending)}</td><td><span class='status {pclass}'>{pstatus}</span></td></tr>" for o,vehicle,total,received,pending,pstatus,pclass in rows)
-    if not trs: trs='<tr><td colspan="10" style="text-align:center;padding:25px">Nenhuma OS encontrada com os filtros selecionados.</td></tr>'
-    filters=[]
-    if status_filter: filters.append('Status: '+status_filter)
-    if payment_filter: filters.append('Pagamento: '+('Pagamento parcial' if payment_filter=='Parcial' else payment_filter))
-    subtitle=' · '.join(filters) if filters else 'Todas as Ordens de Serviço'
-    html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral de OS - NP Acessórios</title><style>
-@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.head .doc-logo{{max-width:170px;max-height:58px;width:auto;height:auto;object-fit:contain;display:block}}.head .doc-header{{padding:2px 0 6px;gap:15px}}.head .doc-brand{{gap:8px;min-width:35%}}.head .doc-company-name{{font-size:10px}}.head .doc-contact{{font-size:8px;line-height:1.35}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}small{{color:#666;font-size:7px}}.status{{display:inline-block;padding:4px 6px;border-radius:10px;font-weight:700;white-space:nowrap}}.paid{{background:#def5e7;color:#16733c}}.partial{{background:#fff0cf;color:#8a5a00}}.pending{{background:#ffe1e1;color:#a11}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
-</style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DAS ORDENS DE SERVIÇO</h1><div class='sub'>{subtitle} · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total das OS</b><strong>{_doc_money(total_value)}</strong></div><div class='card'><b>Total recebido</b><strong>{_doc_money(total_received)}</strong></div><div class='card'><b>Total pendente</b><strong>{_doc_money(total_pending)}</strong></div></div><table><thead><tr><th>OS</th><th>DATA</th><th>CLIENTE / VEÍCULO</th><th>SERVIÇO</th><th>VALOR ORIGINAL</th><th>DESCONTO</th><th>TOTAL</th><th>RECEBIDO</th><th>PENDENTE</th><th>STATUS</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
-    return html
-
-@app.get('/api/finance/print-all')
-def print_all_finance():
-    comp=get_company(); c=db()
-    rows=[dict(x) for x in c.execute('SELECT * FROM finance ORDER BY date DESC, id DESC').fetchall()]
-    c.close()
-    entradas=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Entrada')
-    saidas_pagas=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Saída' and (str(r.get('category') or '')!='Conta Fixa' or str(r.get('status') or 'Pago')=='Pago'))
-    fixas_pendentes=sum(float(r.get('value') or 0) for r in rows if str(r.get('kind') or '')=='Saída' and str(r.get('category') or '')=='Conta Fixa' and str(r.get('status') or 'Pago')!='Pago')
-    saldo=entradas-saidas_pagas
-    trs=''.join(f"<tr><td>{r.get('date') or '-'}</td><td>{r.get('kind') or '-'}</td><td>{r.get('category') or '-'}</td><td>{r.get('description') or '-'}</td><td>{r.get('payment') or '-'}</td><td>{r.get('status') or 'Pago'}</td><td class='money'>{_doc_money(r.get('value') or 0)}</td></tr>" for r in rows)
-    if not trs: trs='<tr><td colspan="7" style="text-align:center;padding:25px">Nenhum lançamento financeiro encontrado.</td></tr>'
-    html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Relatório Geral do Financeiro - NP Acessórios</title><style>
-@page{{size:A4 landscape;margin:8mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:10px;background:#fff}}.sheet{{max-width:1120px;margin:auto;padding:4px 6px 30px}}.head{{border-bottom:2px solid #ed1c24;padding-bottom:8px;margin-bottom:10px}}.head .doc-logo{{max-width:170px;max-height:58px;width:auto;height:auto;object-fit:contain;display:block}}.head .doc-header{{padding:2px 0 6px;gap:15px}}.head .doc-brand{{gap:8px;min-width:35%}}.head .doc-company-name{{font-size:10px}}.head .doc-contact{{font-size:8px;line-height:1.35}}.title{{display:flex;justify-content:space-between;align-items:flex-end;gap:15px}}h1{{font-size:22px;margin:0}}.sub{{font-size:11px;color:#666;margin-top:4px}}.print{{background:#ed1c24;color:#fff;border:0;padding:8px 13px;border-radius:5px;font-weight:700;cursor:pointer}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:10px}}.card{{border:1px solid #ddd;border-radius:5px;padding:8px}}.card b{{display:block;font-size:9px;color:#666;text-transform:uppercase}}.card strong{{font-size:14px;margin-top:3px;display:block}}table{{width:100%;border-collapse:collapse}}th{{background:#202124;color:#fff;padding:6px;text-align:left;font-size:8px}}td{{padding:5px;border-bottom:1px solid #ddd;vertical-align:top;font-size:8px}}.money{{text-align:right;white-space:nowrap}}.foot{{margin-top:10px;text-align:center;border-top:2px solid #ed1c24;padding-top:6px;font-weight:700}}@media print{{.print{{display:none}}}}
-</style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DO FINANCEIRO</h1><div class='sub'>Todos os lançamentos financeiros · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total de entradas</b><strong>{_doc_money(entradas)}</strong></div><div class='card'><b>Despesas pagas</b><strong>{_doc_money(saidas_pagas)}</strong></div><div class='card'><b>Saldo</b><strong>{_doc_money(saldo)}</strong></div><div class='card'><b>Contas fixas pendentes</b><strong>{_doc_money(fixas_pendentes)}</strong></div></div><table><thead><tr><th>DATA</th><th>TIPO</th><th>CATEGORIA</th><th>DESCRIÇÃO</th><th>PAGAMENTO</th><th>STATUS</th><th>VALOR</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
-    return html
-
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
@@ -1183,7 +1101,6 @@ def customer_history(customer):
 def report():
     month=request.args.get('month') or datetime.date.today().strftime('%Y-%m')
     c=db()
-    cleanup_orphan_order_finance(c); c.commit()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
     services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
@@ -1194,7 +1111,7 @@ def report():
 
 @app.get('/api/dashboard')
 def dashboard():
-    c=db(); cleanup_orphan_order_finance(c); c.commit(); today=datetime.date.today().isoformat(); month=today[:7]
+    c=db(); today=datetime.date.today().isoformat(); month=today[:7]
     q=lambda s,a=(): c.execute(s,a).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
     result={'veiculos':q('SELECT COUNT(*) FROM vehicles'),'agendamentos_hoje':q("SELECT COUNT(*) FROM appointments WHERE date=? AND status='Agendado'",(today,)),'os_abertas':q("SELECT COUNT(*) FROM orders WHERE status IN ('Aberta','Em andamento')"),'faturamento_mes':ent,'despesas_mes':out,'lucro_mes':ent-out,'estoque_baixo':q('SELECT COUNT(*) FROM stock WHERE qty<=min_qty'),'pos_venda_pendente':q("SELECT COUNT(*) FROM followups WHERE status='Pendente' AND due_date<=?",(today,))}

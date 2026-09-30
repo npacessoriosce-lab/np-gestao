@@ -1,8 +1,8 @@
-NP GESTÃO AUTOMOTIVA V15 — ESTÁVEL
+NP Gestão — Contas Fixas automáticas
 
-Login inicial:
-Administrador: admin / admin123
-Sócio: socio / socio123
-
-Esta versão foi preparada para evitar cache antigo, sessão presa e carregamento duplicado do Dashboard.
-Execute sempre iniciar.bat e use a pasta desta versão.
+- Contas Fixas podem repetir automaticamente todos os meses.
+- Novos meses são gerados como Pendente.
+- O valor só entra nas despesas quando estiver Pago.
+- Há filtros por busca, mês e status.
+- É possível editar e marcar rapidamente como Pago/Pendente.
+- Não inclui nem recria o banco de dados.
