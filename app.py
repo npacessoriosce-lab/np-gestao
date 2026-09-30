@@ -435,12 +435,8 @@ def ensure_recurring_fixed(c):
     try:
         today=datetime.date.today()
         ym=today.strftime('%Y-%m')
-        # Toda Conta Fixa cadastrada passa a ser mensal por padrão.
-        legacy=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND (recurring IS NULL OR recurring=0) ORDER BY id ASC").fetchall()
-        for r0 in legacy:
-            try: day0=int(str(r0['date'] or '')[-2:])
-            except: day0=today.day
-            c.execute("UPDATE finance SET recurring=1, recurrence_day=?, recurrence_parent=? WHERE id=?",(day0,int(r0['id']),int(r0['id'])))
+        # Só as contas marcadas explicitamente como recorrentes geram novos meses.
+        # Contas fixas antigas permanecem como estão até o usuário marcar a opção.
         rows=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurring=1 ORDER BY id ASC").fetchall()
         for r in rows:
             parent=int(r['recurrence_parent'] or 0)
