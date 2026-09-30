@@ -448,16 +448,23 @@ def ensure_recurring_fixed(c):
             if day<=0:
                 try: day=int(str(r['date'] or '')[-2:])
                 except: day=today.day
-            # Não gera outra parcela no mesmo mês do modelo.
-            if str(r['date'] or '')[:7]==ym:
-                continue
-            exists=c.execute("SELECT id FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurrence_parent=? AND substr(date,1,7)=? LIMIT 1",(template_id,ym)).fetchone()
+            # O lançamento modelo não é duplicado no próprio mês.
+            # A parcela do próximo mês é criada antecipadamente para que a
+            # recorrência fique visível imediatamente após o cadastro.
+            template_month=str(r['date'] or '')[:7]
+            target_ym=ym
+            if template_month==ym:
+                ny=today.year + (1 if today.month==12 else 0)
+                nm=1 if today.month==12 else today.month+1
+                target_ym=f'{ny:04d}-{nm:02d}'
+            exists=c.execute("SELECT id FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurrence_parent=? AND substr(date,1,7)=? LIMIT 1",(template_id,target_ym)).fetchone()
             if exists:
                 continue
             import calendar
-            last=calendar.monthrange(today.year,today.month)[1]
+            ty,tm=map(int,target_ym.split('-'))
+            last=calendar.monthrange(ty,tm)[1]
             d=min(max(day,1),last)
-            date=f'{ym}-{d:02d}'
+            date=f'{target_ym}-{d:02d}'
             c.execute("INSERT INTO finance(date,kind,description,value,payment,category,order_id,status,recurring,recurrence_day,recurrence_parent) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                       (date,'Saída',r['description'],r['value'],r['payment'],'Conta Fixa',0,'Pendente',1,day,template_id))
         c.commit()
