@@ -667,44 +667,76 @@ def delete_item(table,item_id):
     return jsonify(ok=True)
 
 def register_order_finance(c, order_id, payments=None):
-    """Register the confirmed OS payment in finance without duplicating entries."""
+    """Rebuild this OS's Financeiro entries from the actual payment dates.
+
+    An OS belongs to the month in which the service was performed, but each
+    receipt belongs to the month in which the money was actually received.
+    This is important for late payments from a previous month's OS.
+    """
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
         return 0.0
+
     total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-    if payments is None:
-        payments=[]
-        raw=str(o['payment'] or '').strip()
-        if raw:
-            # Legacy/single-payment OS: the whole total belongs to the selected method.
-            payments=[(raw,total,'')]
-    # Normalize valid payment rows
+
+    # The order_payments table is the source of truth because it stores the
+    # actual date on which each installment/payment was received.
+    stored=c.execute(
+        'SELECT date,payment,value,notes FROM order_payments WHERE order_id=? ORDER BY id',
+        (order_id,)
+    ).fetchall()
+
     normalized=[]
-    for item in payments:
-        if isinstance(item, dict):
-            pay=str(item.get('payment') or '').strip()
-            try: val=float(item.get('value') or 0)
-            except: val=0.0
-            notes=str(item.get('notes') or '').strip()
-        else:
-            pay,val,notes=item
-            pay=str(pay or '').strip()
-            try: val=float(val or 0)
-            except: val=0.0
-            notes=str(notes or '').strip()
+    for row in stored:
+        pay=str(row['payment'] or '').strip()
+        try: val=float(row['value'] or 0)
+        except Exception: val=0.0
+        date=str(row['date'] or '').strip()
+        notes=str(row['notes'] or '').strip()
         if pay and val>0:
-            normalized.append((pay,val,notes))
-    # Remove only this OS's previous incoming entries, then rebuild from source of truth.
+            if not date:
+                date=str(datetime.date.today().isoformat())
+            normalized.append((date,pay,val,notes))
+
+    # Backward compatibility for older OS records that have no payment rows.
+    if not normalized and payments is None:
+        raw=str(o['payment'] or '').strip()
+        if raw and total>0:
+            normalized=[(str(datetime.date.today().isoformat()),raw,total,'')]
+
+    # If the caller supplied payments for a brand-new/legacy OS before rows
+    # exist, use the OS date as the payment date (the payment was recorded at
+    # the time the OS was created).
+    if not normalized and payments:
+        for item in payments:
+            if isinstance(item, dict):
+                pay=str(item.get('payment') or '').strip()
+                try: val=float(item.get('value') or 0)
+                except Exception: val=0.0
+                notes=str(item.get('notes') or '').strip()
+                date=str(item.get('date') or o['date'] or datetime.date.today().isoformat())
+            else:
+                pay,val,notes=item
+                pay=str(pay or '').strip()
+                try: val=float(val or 0)
+                except Exception: val=0.0
+                notes=str(notes or '').strip()
+                date=str(o['date'] or datetime.date.today().isoformat())
+            if pay and val>0:
+                normalized.append((date,pay,val,notes))
+
+    # Remove only this OS's previous incoming entries, then rebuild from the
+    # payment records. Manual Financeiro entries are never touched.
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
-    today=str(datetime.date.today().isoformat())
-    period=_current_finance_period(c)
-    for pay,val,notes in normalized:
+
+    for date,pay,val,notes in normalized:
+        period=str(date)[:7] if len(str(date))>=7 else _current_finance_period(c)
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
             "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
-            (today,'Entrada',desc,val,pay,'Recebimento OS',order_id,period)
+            (date,'Entrada',desc,val,pay,'Recebimento OS',order_id,period)
         )
-    return sum(v for _,v,_ in normalized)
+    return sum(v for _,_,v,_ in normalized)
 
 def apply_order_stock(c, order_id):
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
