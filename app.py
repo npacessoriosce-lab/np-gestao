@@ -1061,7 +1061,7 @@ def print_order(order_id):
 
 @app.get('/api/orders/print-all')
 def print_all_orders():
-    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip()
+    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip(); month_filter=str(request.args.get('month') or '').strip()
     c=db()
     orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
     pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
@@ -1074,6 +1074,7 @@ def print_all_orders():
     seq={int(o['id']):i+1 for i,o in enumerate(orders)}
     rows=[]; total_value=total_received=0.0
     for o in orders:
+        if month_filter and not str(o.get('date') or '').startswith(month_filter): continue
         total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0)); plist=paymap.get(int(o['id']),[]); received=sum(float(x.get('value') or 0) for x in plist); pending=max(0,total-received)
         if total<=0 or received>=total-0.01: pstatus='Pago'; pclass='paid'
         elif received>0.01: pstatus='Pagamento parcial'; pclass='partial'
@@ -1087,6 +1088,9 @@ def print_all_orders():
     trs=''.join(f"<tr><td>#{seq.get(int(o['id']),o['id']):05d}</td><td>{o.get('date') or '-'}</td><td><b>{o.get('customer') or '-'}</b><br><small>{vehicle} · Placa: {o.get('plate') or '-'}</small></td><td>{o.get('service') or '-'}</td><td class='money'>{_doc_money(float(o.get('value') or 0))}</td><td class='money'>{_doc_money(float(o.get('discount') or 0))}</td><td class='money'><b>{_doc_money(total)}</b></td><td class='money'>{_doc_money(received)}</td><td class='money'>{_doc_money(pending)}</td><td><span class='status {pclass}'>{pstatus}</span></td></tr>" for o,vehicle,total,received,pending,pstatus,pclass in rows)
     if not trs: trs='<tr><td colspan="10" style="text-align:center;padding:25px">Nenhuma OS encontrada com os filtros selecionados.</td></tr>'
     filters=[]
+    if month_filter: 
+        try: filters.append('Mês: '+datetime.datetime.strptime(month_filter, '%Y-%m').strftime('%m/%Y'))
+        except Exception: filters.append('Mês: '+month_filter)
     if status_filter: filters.append('Status: '+status_filter)
     if payment_filter: filters.append('Pagamento: '+('Pagamento parcial' if payment_filter=='Parcial' else payment_filter))
     subtitle=' · '.join(filters) if filters else 'Todas as Ordens de Serviço'
