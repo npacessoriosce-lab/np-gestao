@@ -162,7 +162,8 @@ def init():
             if 'logo_data' not in colnames(c,'company'):
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
-            addcol(c,'finance','status','TEXT','Pago')
+            addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT','')
+            c.execute("CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY, active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '')")
             c.commit()
         finally:
             c.close()
@@ -174,7 +175,7 @@ def init():
     CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, date TEXT, time TEXT, customer TEXT, plate TEXT, service TEXT, status TEXT DEFAULT 'Agendado', phone TEXT DEFAULT '', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, service TEXT, value REAL DEFAULT 0, cost REAL DEFAULT 0, status TEXT DEFAULT 'Aberta', km REAL DEFAULT 0, delivery_date TEXT DEFAULT '', discount REAL DEFAULT 0, payment TEXT DEFAULT '', notes TEXT DEFAULT '', stock_applied INTEGER DEFAULT 0, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY CHECK(id=1), active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -190,7 +191,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT','')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -437,6 +438,76 @@ def vehicle_by_plate(plate):
     if not r: return jsonify(error='Placa não cadastrada. Cadastre o veículo primeiro em Clientes / Veículos.'),404
     return jsonify(dict(r))
 
+
+def _current_finance_period(c):
+    """Competência financeira atual. Só muda quando o usuário fecha o mês."""
+    today_month=datetime.date.today().strftime('%Y-%m')
+    try:
+        row=c.execute("SELECT active_month FROM finance_periods WHERE id=1").fetchone()
+        active=str(row['active_month'] or '') if row else ''
+    except Exception:
+        active=''
+    if not active:
+        active=today_month
+        try:
+            c.execute("INSERT INTO finance_periods(id,active_month,closed_months) VALUES(1,?,?)",(active,''))
+            c.commit()
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+    return active
+
+def _next_finance_month(month):
+    y,m=[int(x) for x in str(month).split('-')[:2]]
+    if m==12: y+=1; m=1
+    else: m+=1
+    return f"{y:04d}-{m:02d}"
+
+def _month_label(month):
+    try:
+        y,m=[int(x) for x in str(month).split('-')[:2]]
+        nomes=['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro']
+        return f"{nomes[m]}/{y}"
+    except Exception:
+        return str(month)
+
+def ensure_finance_periods(c):
+    """Cria a competência e vincula registros antigos ao mês da própria data."""
+    active=_current_finance_period(c)
+    try:
+        c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(finance_period,'')='' AND date IS NOT NULL")
+    except Exception:
+        pass
+    return active
+
+@app.get('/api/finance-period')
+def finance_period():
+    c=db()
+    active=ensure_finance_periods(c)
+    c.commit(); c.close()
+    return jsonify(active_month=active,label=_month_label(active))
+
+@app.post('/api/finance-period/close')
+def close_finance_period():
+    c=db()
+    try:
+        active=ensure_finance_periods(c)
+        row=c.execute("SELECT closed_months FROM finance_periods WHERE id=1").fetchone()
+        closed=str(row['closed_months'] or '') if row else ''
+        closed_list=[x for x in closed.split(',') if x]
+        if active not in closed_list:
+            closed_list.append(active)
+        nxt=_next_finance_month(active)
+        c.execute("UPDATE finance_periods SET active_month=?,closed_months=? WHERE id=1",(nxt,','.join(closed_list)))
+        c.commit()
+        return jsonify(ok=True,closed_month=active,next_month=nxt,label_closed=_month_label(active),label_next=_month_label(nxt))
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return jsonify(error=f'Não foi possível fechar o mês: {e}'),500
+    finally:
+        c.close()
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -444,6 +515,7 @@ def generic(table):
     if request.method=='GET':
         if table=='finance':
             cleanup_orphan_order_finance(c)
+            ensure_finance_periods(c)
             c.commit()
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
@@ -490,6 +562,9 @@ def generic(table):
 
         c.close(); return jsonify(rows)
     data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
+    if table=='finance':
+        ensure_finance_periods(c)
+        data['finance_period']=str(data.get('finance_period') or _current_finance_period(c))
     if not data: c.close(); return jsonify(error='Dados vazios'),400
     # Clientes podem ser cadastrados sem veículo/placa. Para vehicles, placa vazia vira NULL
     # para não conflitar com a restrição UNIQUE e permitir vários veículos depois para o mesmo cliente.
@@ -598,12 +673,13 @@ def register_order_finance(c, order_id, payments=None):
             normalized.append((pay,val,notes))
     # Remove only this OS's previous incoming entries, then rebuild from source of truth.
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
-    today=str(o['date'] or datetime.date.today().isoformat())
+    today=str(datetime.date.today().isoformat())
+    period=_current_finance_period(c)
     for pay,val,notes in normalized:
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
-            "INSERT INTO finance(date,kind,description,value,payment,category,order_id) VALUES(?,?,?,?,?,?,?)",
-            (today,'Entrada',desc,val,pay,'Recebimento OS',order_id)
+            "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
+            (today,'Entrada',desc,val,pay,'Recebimento OS',order_id,period)
         )
     return sum(v for _,v,_ in normalized)
 
@@ -1187,20 +1263,20 @@ def customer_history(customer):
 def report():
     month=request.args.get('month') or datetime.date.today().strftime('%Y-%m')
     c=db()
-    cleanup_orphan_order_finance(c); c.commit()
+    ensure_finance_periods(c); cleanup_orphan_order_finance(c); c.commit()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
-    ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
+    ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND finance_period=?",(month,)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND finance_period=? AND (category!='Conta Fixa' OR status='Pago')",(month,))
     services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
-    methods=[dict(x) for x in c.execute("SELECT payment,COALESCE(SUM(value),0) total FROM finance WHERE kind='Entrada' AND date LIKE ? GROUP BY payment ORDER BY total DESC",(month+'%',)).fetchall()]
-    recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND date LIKE ? ORDER BY date DESC,id DESC LIMIT 100",(month+'%',)).fetchall()]
+    methods=[dict(x) for x in c.execute("SELECT payment,COALESCE(SUM(value),0) total FROM finance WHERE kind='Entrada' AND finance_period=? GROUP BY payment ORDER BY total DESC",(month,)).fetchall()]
+    recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND finance_period=? ORDER BY date DESC,id DESC LIMIT 100",(month,)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low)
 
 @app.get('/api/dashboard')
 def dashboard():
-    c=db(); cleanup_orphan_order_finance(c); c.commit(); today=datetime.date.today().isoformat(); month=today[:7]
+    c=db(); cleanup_orphan_order_finance(c); c.commit(); today=datetime.date.today().isoformat(); month=ensure_finance_periods(c)
     q=lambda s,a=(): c.execute(s,a).fetchone()[0] or 0
-    ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND date LIKE ?",(month+'%',)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND date LIKE ?",(month+'%',))
+    ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND finance_period=?",(month,)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND finance_period=? AND (category!='Conta Fixa' OR status='Pago')",(month,))
     result={'veiculos':q('SELECT COUNT(*) FROM vehicles'),'agendamentos_hoje':q("SELECT COUNT(*) FROM appointments WHERE date=? AND status='Agendado'",(today,)),'os_abertas':q("SELECT COUNT(*) FROM orders WHERE status IN ('Aberta','Em andamento')"),'faturamento_mes':ent,'despesas_mes':out,'lucro_mes':ent-out,'estoque_baixo':q('SELECT COUNT(*) FROM stock WHERE qty<=min_qty'),'pos_venda_pendente':q("SELECT COUNT(*) FROM followups WHERE status='Pendente' AND due_date<=?",(today,))}
     c.close(); return jsonify(result)
 
