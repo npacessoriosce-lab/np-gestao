@@ -455,6 +455,29 @@ def _current_finance_period(c):
         except Exception:
             try: c.rollback()
             except Exception: pass
+    else:
+        # O mês financeiro só avança pelo botão "Fechar mês".
+        # Em bancos criados pela versão anterior, a competência podia ter
+        # sido inicializada automaticamente no mês do calendário (ex.:
+        # 01/10), mesmo sem o fechamento de setembro. Nesse caso, recupera
+        # uma única vez o mês anterior quando ainda não existe nenhum mês
+        # fechado e há lançamentos anteriores para continuar o fechamento.
+        try:
+            row=c.execute("SELECT closed_months FROM finance_periods WHERE id=1").fetchone()
+            closed=str(row['closed_months'] or '') if row else ''
+            if not closed and active==today_month:
+                prev=_next_finance_month(active) if False else None
+                y,m=[int(x) for x in today_month.split('-')]
+                if m==1: y-=1; m=12
+                else: m-=1
+                prev=f"{y:04d}-{m:02d}"
+                has_prev=c.execute("SELECT 1 FROM finance WHERE date LIKE ? LIMIT 1",(prev+'%',)).fetchone()
+                if has_prev:
+                    active=prev
+                    c.execute("UPDATE finance_periods SET active_month=? WHERE id=1",(active,))
+                    c.commit()
+        except Exception:
+            pass
     return active
 
 def _next_finance_month(month):
