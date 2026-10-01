@@ -191,7 +191,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT','')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -539,6 +539,37 @@ def close_finance_period():
     finally:
         c.close()
 
+def ensure_recurring_fixed(c):
+    """Gera a parcela do mês atual das contas fixas marcadas como recorrentes."""
+    try:
+        today_date=datetime.date.today()
+        ym=today_date.strftime('%Y-%m')
+        rows=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurring=1 ORDER BY id ASC").fetchall()
+        for r in rows:
+            parent=int(r['recurrence_parent'] or 0)
+            template_id=parent or int(r['id'])
+            if parent and int(r['id']) != template_id:
+                continue
+            day=int(r['recurrence_day'] or 0)
+            if day <= 0:
+                try: day=int(str(r['date'] or '')[-2:])
+                except Exception: day=today_date.day
+            if str(r['date'] or '')[:7] == ym:
+                continue
+            exists=c.execute("SELECT id FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurrence_parent=? AND substr(date,1,7)=? LIMIT 1",(template_id,ym)).fetchone()
+            if exists:
+                continue
+            import calendar
+            last=calendar.monthrange(today_date.year,today_date.month)[1]
+            d=min(max(day,1),last)
+            date_value=f'{ym}-{d:02d}'
+            c.execute("INSERT INTO finance(date,kind,description,value,payment,category,order_id,status,finance_period,recurring,recurrence_day,recurrence_parent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (date_value,'Saída',r['description'],r['value'],r['payment'],'Conta Fixa',0,'Pendente',ym,1,day,template_id))
+        c.commit()
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+
 @app.route('/api/<table>',methods=['GET','POST'])
 def generic(table):
     if table not in TABLES: return jsonify(error='Tabela inválida'),400
@@ -547,6 +578,7 @@ def generic(table):
         if table=='finance':
             cleanup_orphan_order_finance(c)
             ensure_finance_periods(c)
+            ensure_recurring_fixed(c)
             c.commit()
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
@@ -1206,7 +1238,7 @@ def print_order(order_id):
 
 @app.get('/api/orders/print-all')
 def print_all_orders():
-    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip(); month_filter=str(request.args.get('month') or '').strip()
+    comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip(); month_filter=str(request.args.get('month') or '').strip(); start_filter=str(request.args.get('start') or '').strip(); end_filter=str(request.args.get('end') or '').strip()
     c=db()
     orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
     pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
@@ -1219,7 +1251,10 @@ def print_all_orders():
     seq={int(o['id']):i+1 for i,o in enumerate(orders)}
     rows=[]; total_value=total_received=0.0
     for o in orders:
-        if month_filter and not str(o.get('date') or '').startswith(month_filter): continue
+        order_date=str(o.get('date') or '')[:10]
+        if start_filter and (not order_date or order_date < start_filter): continue
+        if end_filter and (not order_date or order_date > end_filter): continue
+        if not start_filter and not end_filter and month_filter and not order_date.startswith(month_filter): continue
         total=max(0.0,float(o.get('value') or 0)-float(o.get('discount') or 0)); plist=paymap.get(int(o['id']),[]); received=sum(float(x.get('value') or 0) for x in plist); pending=max(0,total-received)
         if total<=0 or received>=total-0.01: pstatus='Pago'; pclass='paid'
         elif received>0.01: pstatus='Pagamento parcial'; pclass='partial'
@@ -1233,7 +1268,11 @@ def print_all_orders():
     trs=''.join(f"<tr><td>#{seq.get(int(o['id']),o['id']):05d}</td><td>{o.get('date') or '-'}</td><td><b>{o.get('customer') or '-'}</b><br><small>{vehicle} · Placa: {o.get('plate') or '-'}</small></td><td>{o.get('service') or '-'}</td><td class='money'>{_doc_money(float(o.get('value') or 0))}</td><td class='money'>{_doc_money(float(o.get('discount') or 0))}</td><td class='money'><b>{_doc_money(total)}</b></td><td class='money'>{_doc_money(received)}</td><td class='money'>{_doc_money(pending)}</td><td><span class='status {pclass}'>{pstatus}</span></td></tr>" for o,vehicle,total,received,pending,pstatus,pclass in rows)
     if not trs: trs='<tr><td colspan="10" style="text-align:center;padding:25px">Nenhuma OS encontrada com os filtros selecionados.</td></tr>'
     filters=[]
-    if month_filter: 
+    if start_filter or end_filter:
+        if start_filter and end_filter: filters.append('Período: '+datetime.datetime.strptime(start_filter, '%Y-%m-%d').strftime('%d/%m/%Y')+' a '+datetime.datetime.strptime(end_filter, '%Y-%m-%d').strftime('%d/%m/%Y'))
+        elif start_filter: filters.append('A partir de: '+datetime.datetime.strptime(start_filter, '%Y-%m-%d').strftime('%d/%m/%Y'))
+        else: filters.append('Até: '+datetime.datetime.strptime(end_filter, '%Y-%m-%d').strftime('%d/%m/%Y'))
+    elif month_filter: 
         try: filters.append('Mês: '+datetime.datetime.strptime(month_filter, '%Y-%m').strftime('%m/%Y'))
         except Exception: filters.append('Mês: '+month_filter)
     if status_filter: filters.append('Status: '+status_filter)
@@ -1331,17 +1370,45 @@ def customer_history(customer):
 @app.get('/api/report')
 def report():
     requested_month=str(request.args.get('month') or '').strip()
+    start_filter=str(request.args.get('start') or '').strip()
+    end_filter=str(request.args.get('end') or '').strip()
     c=db()
     active_month=ensure_finance_periods(c)
-    month=requested_month or active_month
+    if not start_filter and not end_filter:
+        month=requested_month or active_month
+        start_filter=month+'-01'
+        try:
+            d=datetime.datetime.strptime(start_filter,'%Y-%m-%d').date()
+            next_month=(d.replace(day=28)+datetime.timedelta(days=4)).replace(day=1)
+            end_filter=(next_month-datetime.timedelta(days=1)).isoformat()
+        except Exception:
+            end_filter=month+'-31'
     cleanup_orphan_order_finance(c); c.commit()
-    q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
-    ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND finance_period=?",(month,)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND finance_period=? AND (category!='Conta Fixa' OR status='Pago')",(month,))
-    services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
-    methods=[dict(x) for x in c.execute("SELECT payment,COALESCE(SUM(value),0) total FROM finance WHERE kind='Entrada' AND finance_period=? GROUP BY payment ORDER BY total DESC",(month,)).fetchall()]
-    recent=[dict(x) for x in c.execute("SELECT date,description,value,payment,order_id FROM finance WHERE kind='Entrada' AND finance_period=? ORDER BY date DESC,id DESC LIMIT 100",(month,)).fetchall()]
+    # Entradas: OS vinculadas usam a data do serviço/OS como competência;
+    # lançamentos manuais usam a própria data do lançamento.
+    ent_sql="""SELECT COALESCE(SUM(f.value),0) FROM finance f
+              WHERE f.kind='Entrada' AND (
+                (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
+                OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
+              )"""
+    ent=c.execute(ent_sql,(start_filter,end_filter,start_filter,end_filter)).fetchone()[0] or 0
+    out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
+                     WHERE kind='Saída' AND date>=? AND date<=?
+                     AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
+    services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
+                                             FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
+    methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
+                                            WHERE f.kind='Entrada' AND (
+                                              (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
+                                              OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
+                                            ) GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+    recent=[dict(x) for x in c.execute("""SELECT f.date,f.description,f.value,f.payment,f.order_id FROM finance f
+                                           WHERE f.kind='Entrada' AND (
+                                             (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
+                                             OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
+                                           ) ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
-    c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low)
+    c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
 @app.get('/api/dashboard')
 def dashboard():
