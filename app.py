@@ -1284,9 +1284,11 @@ def customer_history(customer):
 
 @app.get('/api/report')
 def report():
-    month=request.args.get('month') or datetime.date.today().strftime('%Y-%m')
+    requested_month=str(request.args.get('month') or '').strip()
     c=db()
-    ensure_finance_periods(c); cleanup_orphan_order_finance(c); c.commit()
+    active_month=ensure_finance_periods(c)
+    month=requested_month or active_month
+    cleanup_orphan_order_finance(c); c.commit()
     q=lambda sql,args=(): c.execute(sql,args).fetchone()[0] or 0
     ent=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Entrada' AND finance_period=?",(month,)); out=q("SELECT COALESCE(SUM(value),0) FROM finance WHERE kind='Saída' AND finance_period=? AND (category!='Conta Fixa' OR status='Pago')",(month,))
     services=[dict(x) for x in c.execute("SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo FROM orders WHERE date LIKE ? GROUP BY service ORDER BY total DESC",(month+'%',)).fetchall()]
