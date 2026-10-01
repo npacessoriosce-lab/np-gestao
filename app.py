@@ -499,8 +499,16 @@ def ensure_finance_periods(c):
     active=_current_finance_period(c)
     try:
         c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(finance_period,'')='' AND date IS NOT NULL")
+        # Keep OS-linked entries in the competence of the service/OS month,
+        # including installments that were received after the service month.
+        c.execute("UPDATE finance SET finance_period=substr(orders.date,1,7) FROM orders WHERE finance.order_id=orders.id AND finance.kind='Entrada' AND orders.date IS NOT NULL")
     except Exception:
-        pass
+        # SQLite does not support UPDATE ... FROM on older versions; use a
+        # portable correlated subquery as fallback.
+        try:
+            c.execute("UPDATE finance SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id) WHERE kind='Entrada' AND order_id>0 AND EXISTS (SELECT 1 FROM orders o2 WHERE o2.id=finance.order_id AND o2.date IS NOT NULL)")
+        except Exception:
+            pass
     return active
 
 @app.get('/api/finance-period')
@@ -667,11 +675,12 @@ def delete_item(table,item_id):
     return jsonify(ok=True)
 
 def register_order_finance(c, order_id, payments=None):
-    """Rebuild this OS's Financeiro entries from the actual payment dates.
+    """Rebuild this OS's Financeiro entries using the OS service month.
 
-    An OS belongs to the month in which the service was performed, but each
-    receipt belongs to the month in which the money was actually received.
-    This is important for late payments from a previous month's OS.
+    The financial competence follows the month in which the service/OS was
+    performed. A payment made later (including an overdue installment) stays
+    financially attributed to that original OS month, so the full OS value
+    contributes to the month of service and to the accumulated balance.
     """
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
@@ -730,7 +739,12 @@ def register_order_finance(c, order_id, payments=None):
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
 
     for date,pay,val,notes in normalized:
-        period=str(date)[:7] if len(str(date))>=7 else _current_finance_period(c)
+        # A OS's financial competence is the month of the service, not the
+        # date on which an installment was actually received. This keeps late
+        # payments from September inside September's closing/accumulated
+        # balance, while the payment history still retains its real date.
+        order_date=str(o['date'] or '').strip()
+        period=order_date[:7] if len(order_date)>=7 else _current_finance_period(c)
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
             "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
