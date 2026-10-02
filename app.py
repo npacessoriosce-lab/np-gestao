@@ -527,6 +527,34 @@ def finance_period():
     c.commit(); c.close()
     return jsonify(active_month=active,label=_month_label(active))
 
+@app.post('/api/finance-period/reopen-last')
+def reopen_last_finance_period():
+    c=db()
+    try:
+        row=c.execute("SELECT active_month,closed_months,last_close_date FROM finance_periods WHERE id=1").fetchone()
+        if not row:
+            return jsonify(error='Nenhum fechamento encontrado.'),400
+        active=str(row['active_month'] or '')
+        closed=str(row['closed_months'] or '')
+        closed_list=[x for x in closed.split(',') if x]
+        if not closed_list:
+            return jsonify(error='Não existe um fechamento para reabrir.'),400
+        last_closed=closed_list[-1]
+        expected_next=_next_finance_month(last_closed)
+        if active != expected_next:
+            return jsonify(error='Só é possível reabrir o último mês fechado.'),400
+        closed_list=closed_list[:-1]
+        previous_close=closed_list[-1] if closed_list else ''
+        c.execute("UPDATE finance_periods SET active_month=?,closed_months=?,last_close_date=? WHERE id=1",(last_closed,','.join(closed_list),''))
+        c.commit()
+        return jsonify(ok=True,reopened_month=last_closed,label_reopened=_month_label(last_closed),next_month=active,label_next=_month_label(active),previous_close=previous_close)
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        return jsonify(error=f'Não foi possível reabrir o mês: {e}'),500
+    finally:
+        c.close()
+
 @app.post('/api/finance-period/close')
 def close_finance_period():
     c=db()
@@ -596,23 +624,12 @@ def generic(table):
     if request.method=='GET':
         if table=='finance':
             cleanup_orphan_order_finance(c)
-            repair_order_payment_totals(c)
             ensure_finance_periods(c)
             ensure_recurring_fixed(c)
             c.commit()
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
-        if table=='finance':
-            # Inclui a competência da OS vinculada sem alterar a tabela finance.
-            # Isso permite separar, no card do mês, recebimentos de OS antigas
-            # que foram pagos agora: eles entram no saldo acumulado, não no saldo
-            # do mês corrente.
-            rows=[dict(x) for x in c.execute(f'''SELECT f.*, o.date AS order_date
-                                                 FROM finance f
-                                                 LEFT JOIN orders o ON o.id=f.order_id
-                                                 ORDER BY f.id DESC''').fetchall()]
-        else:
-            rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
+        rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
 
         # As OS guarda cliente/placa, enquanto telefone e dados do veículo
         # ficam no cadastro de vehicles. A lista de OS precisa cruzar essas
@@ -811,46 +828,6 @@ def register_order_finance(c, order_id, payments=None):
         )
     return sum(v for _,_,v,_ in normalized)
 
-def repair_order_payment_totals(c, order_id=None):
-    """Corrige somente pagamentos de OS que ultrapassaram o total da própria OS.
-
-    Regra de segurança: o total recebido de uma OS nunca pode ser maior que
-    o total líquido da OS (valor - desconto). Se houver excesso histórico,
-    ele é retirado da última parcela registrada e o Financeiro da OS é
-    reconstruído. Lançamentos manuais do Financeiro não são tocados.
-    """
-    if order_id is None:
-        orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
-    else:
-        orders=c.execute('SELECT id,value,discount FROM orders WHERE id=?',(order_id,)).fetchall()
-    changed=[]
-    for o in orders:
-        oid=int(o['id'])
-        total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-        pays=c.execute('SELECT id,value FROM order_payments WHERE order_id=? ORDER BY id ASC',(oid,)).fetchall()
-        received=sum(max(0.0,float(x['value'] or 0)) for x in pays)
-        excess=received-total
-        if excess <= 0.01:
-            continue
-        remaining_excess=excess
-        for row in reversed(pays):
-            val=max(0.0,float(row['value'] or 0))
-            cut=min(val,remaining_excess)
-            newval=round(val-cut,2)
-            if newval <= 0.005:
-                c.execute('DELETE FROM order_payments WHERE id=?',(int(row['id']),))
-            else:
-                c.execute('UPDATE order_payments SET value=? WHERE id=?',(newval,int(row['id'])))
-            remaining_excess=round(remaining_excess-cut,2)
-            if remaining_excess <= 0.005:
-                break
-        changed.append(oid)
-        # Rebuild only this OS's linked Financeiro entries after the correction.
-        register_order_finance(c,oid)
-    if changed:
-        c.commit()
-    return changed
-
 def apply_order_stock(c, order_id):
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o or o['stock_applied']: return
@@ -1039,11 +1016,11 @@ def order_items(order_id):
 
 @app.get('/api/orders/<int:order_id>/payments')
 def order_payments(order_id):
-    c=db(); repair_order_payment_totals(c,order_id); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
+    c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
 
 @app.get('/api/orders/payment-statuses')
 def order_payment_statuses():
-    c=db(); repair_order_payment_totals(c)
+    c=db()
     orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
     pays=c.execute('SELECT order_id,COALESCE(SUM(value),0) received FROM order_payments GROUP BY order_id').fetchall()
     received_map={int(x['order_id']):float(x['received'] or 0) for x in pays}
@@ -1306,7 +1283,7 @@ def print_order(order_id):
 @app.get('/api/orders/print-all')
 def print_all_orders():
     comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip(); month_filter=str(request.args.get('month') or '').strip(); start_filter=str(request.args.get('start') or '').strip(); end_filter=str(request.args.get('end') or '').strip()
-    c=db(); repair_order_payment_totals(c)
+    c=db()
     orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
     pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
     vehicles=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
@@ -1451,30 +1428,22 @@ def report():
         except Exception:
             end_filter=month+'-31'
     cleanup_orphan_order_finance(c); c.commit()
-    # Para o caixa do mês, recebimentos de OS antigas pagos agora NÃO
-    # entram como entrada do mês. Eles continuam registrados pela data real
-    # do recebimento e entram no saldo acumulado. Entradas manuais continuam
-    # pertencendo ao mês da própria data.
+    # Entradas financeiras sempre usam a data real do recebimento.
+    # A data da OS continua separada para relatórios de serviços/comissão.
     ent_sql="""SELECT COALESCE(SUM(f.value),0) FROM finance f
-              LEFT JOIN orders o ON o.id=f.order_id
-              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-              AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))"""
-    ent=c.execute(ent_sql,(start_filter,end_filter,start_filter,end_filter)).fetchone()[0] or 0
+              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?"""
+    ent=c.execute(ent_sql,(start_filter,end_filter)).fetchone()[0] or 0
     out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
                      WHERE kind='Saída' AND date>=? AND date<=?
                      AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
     services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
                                              FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
-                                            LEFT JOIN orders o ON o.id=f.order_id
                                             WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                            AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))
-                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     recent=[dict(x) for x in c.execute("""SELECT f.date,f.description,f.value,f.payment,f.order_id FROM finance f
-                                           LEFT JOIN orders o ON o.id=f.order_id
                                            WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                           AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))
-                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
