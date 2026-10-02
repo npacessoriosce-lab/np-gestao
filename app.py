@@ -163,7 +163,8 @@ def init():
                 c.execute("ALTER TABLE company ADD COLUMN logo_data TEXT")
                 c.execute("UPDATE company SET logo_data='' WHERE logo_data IS NULL")
             addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT','')
-            c.execute("CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY, active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '')")
+            c.execute("CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY, active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '', last_close_date TEXT DEFAULT '')")
+            addcol(c,'finance_periods','last_close_date','TEXT','')
             c.commit()
         finally:
             c.close()
@@ -175,7 +176,7 @@ def init():
     CREATE TABLE IF NOT EXISTS appointments(id INTEGER PRIMARY KEY, date TEXT, time TEXT, customer TEXT, plate TEXT, service TEXT, status TEXT DEFAULT 'Agendado', phone TEXT DEFAULT '', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, service TEXT, value REAL DEFAULT 0, cost REAL DEFAULT 0, status TEXT DEFAULT 'Aberta', km REAL DEFAULT 0, delivery_date TEXT DEFAULT '', discount REAL DEFAULT 0, payment TEXT DEFAULT '', notes TEXT DEFAULT '', stock_applied INTEGER DEFAULT 0, created_at TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
-    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY CHECK(id=1), active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY CHECK(id=1), active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '', last_close_date TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
     CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -191,7 +192,7 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
+    addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance_periods','last_close_date','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
     now=datetime.datetime.now().isoformat(timespec='seconds')
@@ -531,15 +532,24 @@ def close_finance_period():
     c=db()
     try:
         active=ensure_finance_periods(c)
+        data=request.get_json(silent=True) or {}
+        close_date=str(data.get('close_date') or datetime.date.today().isoformat()).strip()
+        try:
+            datetime.date.fromisoformat(close_date)
+        except Exception:
+            return jsonify(error='Data de fechamento inválida.'),400
+        today=datetime.date.today().isoformat()
+        if close_date > today:
+            return jsonify(error='A data de fechamento não pode ser futura.'),400
         row=c.execute("SELECT closed_months FROM finance_periods WHERE id=1").fetchone()
         closed=str(row['closed_months'] or '') if row else ''
         closed_list=[x for x in closed.split(',') if x]
         if active not in closed_list:
             closed_list.append(active)
         nxt=_next_finance_month(active)
-        c.execute("UPDATE finance_periods SET active_month=?,closed_months=? WHERE id=1",(nxt,','.join(closed_list)))
+        c.execute("UPDATE finance_periods SET active_month=?,closed_months=?,last_close_date=? WHERE id=1",(nxt,','.join(closed_list),close_date))
         c.commit()
-        return jsonify(ok=True,closed_month=active,next_month=nxt,label_closed=_month_label(active),label_next=_month_label(nxt))
+        return jsonify(ok=True,closed_month=active,next_month=nxt,close_date=close_date,label_closed=_month_label(active),label_next=_month_label(nxt))
     except Exception as e:
         try: c.rollback()
         except Exception: pass
@@ -551,7 +561,7 @@ def ensure_recurring_fixed(c):
     """Gera a parcela do mês atual das contas fixas marcadas como recorrentes."""
     try:
         today_date=datetime.date.today()
-        ym=today_date.strftime('%Y-%m')
+        ym=_current_finance_period(c)
         rows=c.execute("SELECT * FROM finance WHERE category='Conta Fixa' AND kind='Saída' AND recurring=1 ORDER BY id ASC").fetchall()
         for r in rows:
             parent=int(r['recurrence_parent'] or 0)
@@ -568,7 +578,8 @@ def ensure_recurring_fixed(c):
             if exists:
                 continue
             import calendar
-            last=calendar.monthrange(today_date.year,today_date.month)[1]
+            yy,mm=[int(x) for x in ym.split('-')]
+            last=calendar.monthrange(yy,mm)[1]
             d=min(max(day,1),last)
             date_value=f'{ym}-{d:02d}'
             c.execute("INSERT INTO finance(date,kind,description,value,payment,category,order_id,status,finance_period,recurring,recurrence_day,recurrence_parent) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -585,6 +596,7 @@ def generic(table):
     if request.method=='GET':
         if table=='finance':
             cleanup_orphan_order_finance(c)
+            repair_order_payment_totals(c)
             ensure_finance_periods(c)
             ensure_recurring_fixed(c)
             c.commit()
@@ -751,7 +763,7 @@ def register_order_finance(c, order_id, payments=None):
     if not normalized and payments is None:
         raw=str(o['payment'] or '').strip()
         if raw and total>0:
-            normalized=[(str(datetime.date.today().isoformat()),raw,total,'')]
+            normalized=[(str(o['date'] or datetime.date.today().isoformat()),raw,total,'')]
 
     # If the caller supplied payments for a brand-new/legacy OS before rows
     # exist, use the OS date as the payment date (the payment was recorded at
@@ -788,6 +800,46 @@ def register_order_finance(c, order_id, payments=None):
             (date,'Entrada',desc,val,pay,'Recebimento OS',order_id,period)
         )
     return sum(v for _,_,v,_ in normalized)
+
+def repair_order_payment_totals(c, order_id=None):
+    """Corrige somente pagamentos de OS que ultrapassaram o total da própria OS.
+
+    Regra de segurança: o total recebido de uma OS nunca pode ser maior que
+    o total líquido da OS (valor - desconto). Se houver excesso histórico,
+    ele é retirado da última parcela registrada e o Financeiro da OS é
+    reconstruído. Lançamentos manuais do Financeiro não são tocados.
+    """
+    if order_id is None:
+        orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
+    else:
+        orders=c.execute('SELECT id,value,discount FROM orders WHERE id=?',(order_id,)).fetchall()
+    changed=[]
+    for o in orders:
+        oid=int(o['id'])
+        total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
+        pays=c.execute('SELECT id,value FROM order_payments WHERE order_id=? ORDER BY id ASC',(oid,)).fetchall()
+        received=sum(max(0.0,float(x['value'] or 0)) for x in pays)
+        excess=received-total
+        if excess <= 0.01:
+            continue
+        remaining_excess=excess
+        for row in reversed(pays):
+            val=max(0.0,float(row['value'] or 0))
+            cut=min(val,remaining_excess)
+            newval=round(val-cut,2)
+            if newval <= 0.005:
+                c.execute('DELETE FROM order_payments WHERE id=?',(int(row['id']),))
+            else:
+                c.execute('UPDATE order_payments SET value=? WHERE id=?',(newval,int(row['id'])))
+            remaining_excess=round(remaining_excess-cut,2)
+            if remaining_excess <= 0.005:
+                break
+        changed.append(oid)
+        # Rebuild only this OS's linked Financeiro entries after the correction.
+        register_order_finance(c,oid)
+    if changed:
+        c.commit()
+    return changed
 
 def apply_order_stock(c, order_id):
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
@@ -977,11 +1029,11 @@ def order_items(order_id):
 
 @app.get('/api/orders/<int:order_id>/payments')
 def order_payments(order_id):
-    c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
+    c=db(); repair_order_payment_totals(c,order_id); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
 
 @app.get('/api/orders/payment-statuses')
 def order_payment_statuses():
-    c=db()
+    c=db(); repair_order_payment_totals(c)
     orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
     pays=c.execute('SELECT order_id,COALESCE(SUM(value),0) received FROM order_payments GROUP BY order_id').fetchall()
     received_map={int(x['order_id']):float(x['received'] or 0) for x in pays}
@@ -1244,7 +1296,7 @@ def print_order(order_id):
 @app.get('/api/orders/print-all')
 def print_all_orders():
     comp=get_company(); status_filter=str(request.args.get('status') or '').strip(); payment_filter=str(request.args.get('payment') or '').strip(); month_filter=str(request.args.get('month') or '').strip(); start_filter=str(request.args.get('start') or '').strip(); end_filter=str(request.args.get('end') or '').strip()
-    c=db()
+    c=db(); repair_order_payment_totals(c)
     orders=[dict(x) for x in c.execute('SELECT * FROM orders ORDER BY id ASC').fetchall()]
     pays=c.execute('SELECT order_id,date,payment,value,notes FROM order_payments ORDER BY order_id,id').fetchall()
     vehicles=[dict(x) for x in c.execute('SELECT * FROM vehicles ORDER BY id DESC').fetchall()]
@@ -1400,15 +1452,11 @@ def report():
     services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
                                              FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
-                                            WHERE f.kind='Entrada' AND (
-                                              (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
-                                              OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
-                                            ) GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+                                            WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
+                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     recent=[dict(x) for x in c.execute("""SELECT f.date,f.description,f.value,f.payment,f.order_id FROM finance f
-                                           WHERE f.kind='Entrada' AND (
-                                             (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
-                                             OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
-                                           ) ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+                                           WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
+                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
