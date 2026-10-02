@@ -495,17 +495,25 @@ def _month_label(month):
         return str(month)
 
 def ensure_finance_periods(c):
-    """Cria a competência e vincula registros antigos ao mês da própria data."""
+    """Mantém a competência financeira coerente com a origem de cada lançamento.
+
+    • Lançamento manual/despesa: mês da própria data do lançamento.
+    • Recebimento de OS: mês da data do serviço/OS, mesmo se o pagamento ocorrer depois.
+
+    Isso evita que o card de Despesas (mês) fique diferente da soma dos lançamentos
+    exibidos no mês e preserva o histórico de pagamentos atrasados da OS.
+    """
     active=_current_finance_period(c)
     try:
-        c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(finance_period,'')='' AND date IS NOT NULL")
-        # Keep OS-linked entries in the competence of the service/OS month,
-        # including installments that were received after the service month.
-        c.execute("UPDATE finance SET finance_period=substr(orders.date,1,7) FROM orders WHERE finance.order_id=orders.id AND finance.kind='Entrada' AND orders.date IS NOT NULL")
+        # Primeiro, todos os lançamentos que NÃO são recebimentos de OS seguem
+        # a própria data. Isso corrige registros antigos que ficaram com uma
+        # competência incorreta após a implantação do fechamento mensal.
+        c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL AND substr(date,1,7)<>''")
+        # Para recebimentos vinculados a OS, a competência é sempre a data da OS.
+        c.execute("UPDATE finance SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id) WHERE kind='Entrada' AND order_id>0 AND EXISTS (SELECT 1 FROM orders o2 WHERE o2.id=finance.order_id AND o2.date IS NOT NULL)")
     except Exception:
-        # SQLite does not support UPDATE ... FROM on older versions; use a
-        # portable correlated subquery as fallback.
         try:
+            c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL")
             c.execute("UPDATE finance SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id) WHERE kind='Entrada' AND order_id>0 AND EXISTS (SELECT 1 FROM orders o2 WHERE o2.id=finance.order_id AND o2.date IS NOT NULL)")
         except Exception:
             pass
