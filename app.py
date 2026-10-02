@@ -602,7 +602,17 @@ def generic(table):
             c.commit()
         order='id DESC'
         if table=='stock': order='name COLLATE NOCASE ASC'
-        rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
+        if table=='finance':
+            # Inclui a competência da OS vinculada sem alterar a tabela finance.
+            # Isso permite separar, no card do mês, recebimentos de OS antigas
+            # que foram pagos agora: eles entram no saldo acumulado, não no saldo
+            # do mês corrente.
+            rows=[dict(x) for x in c.execute(f'''SELECT f.*, o.date AS order_date
+                                                 FROM finance f
+                                                 LEFT JOIN orders o ON o.id=f.order_id
+                                                 ORDER BY f.id DESC''').fetchall()]
+        else:
+            rows=[dict(x) for x in c.execute(f'SELECT * FROM {table} ORDER BY {order}').fetchall()]
 
         # As OS guarda cliente/placa, enquanto telefone e dados do veículo
         # ficam no cadastro de vehicles. A lista de OS precisa cruzar essas
@@ -1441,22 +1451,30 @@ def report():
         except Exception:
             end_filter=month+'-31'
     cleanup_orphan_order_finance(c); c.commit()
-    # Entradas financeiras sempre usam a data real do recebimento.
-    # A data da OS continua separada para relatórios de serviços/comissão.
+    # Para o caixa do mês, recebimentos de OS antigas pagos agora NÃO
+    # entram como entrada do mês. Eles continuam registrados pela data real
+    # do recebimento e entram no saldo acumulado. Entradas manuais continuam
+    # pertencendo ao mês da própria data.
     ent_sql="""SELECT COALESCE(SUM(f.value),0) FROM finance f
-              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?"""
-    ent=c.execute(ent_sql,(start_filter,end_filter)).fetchone()[0] or 0
+              LEFT JOIN orders o ON o.id=f.order_id
+              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
+              AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))"""
+    ent=c.execute(ent_sql,(start_filter,end_filter,start_filter,end_filter)).fetchone()[0] or 0
     out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
                      WHERE kind='Saída' AND date>=? AND date<=?
                      AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
     services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
                                              FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
+                                            LEFT JOIN orders o ON o.id=f.order_id
                                             WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
+                                            AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))
+                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
     recent=[dict(x) for x in c.execute("""SELECT f.date,f.description,f.value,f.payment,f.order_id FROM finance f
+                                           LEFT JOIN orders o ON o.id=f.order_id
                                            WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter)).fetchall()]
+                                           AND (COALESCE(f.order_id,0)=0 OR (o.date>=? AND o.date<=?))
+                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
