@@ -495,13 +495,13 @@ def _month_label(month):
         return str(month)
 
 def ensure_finance_periods(c):
-    """Mantém a competência financeira coerente com a origem de cada lançamento.
+    """Mantém a competência financeira coerente com a data real do lançamento.
 
     • Lançamento manual/despesa: mês da própria data do lançamento.
-    • Recebimento de OS: mês da data do serviço/OS, mesmo se o pagamento ocorrer depois.
+    • Recebimento de OS: mês da data real do recebimento.
 
-    Isso evita que o card de Despesas (mês) fique diferente da soma dos lançamentos
-    exibidos no mês e preserva o histórico de pagamentos atrasados da OS.
+    A data da OS continua sendo usada nos relatórios de serviços/OS e comissão,
+    mas não altera o caixa do mês em que o pagamento foi efetivamente recebido.
     """
     active=_current_finance_period(c)
     try:
@@ -509,12 +509,12 @@ def ensure_finance_periods(c):
         # a própria data. Isso corrige registros antigos que ficaram com uma
         # competência incorreta após a implantação do fechamento mensal.
         c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL AND substr(date,1,7)<>''")
-        # Para recebimentos vinculados a OS, a competência é sempre a data da OS.
-        c.execute("UPDATE finance SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id) WHERE kind='Entrada' AND order_id>0 AND EXISTS (SELECT 1 FROM orders o2 WHERE o2.id=finance.order_id AND o2.date IS NOT NULL)")
+        # Para recebimentos vinculados a OS, a competência é a data real do pagamento.
+        c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE kind='Entrada' AND order_id>0 AND date IS NOT NULL AND substr(date,1,7)<>''")
     except Exception:
         try:
             c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL")
-            c.execute("UPDATE finance SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id) WHERE kind='Entrada' AND order_id>0 AND EXISTS (SELECT 1 FROM orders o2 WHERE o2.id=finance.order_id AND o2.date IS NOT NULL)")
+            c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE kind='Entrada' AND order_id>0 AND date IS NOT NULL")
         except Exception:
             pass
     return active
@@ -715,12 +715,12 @@ def delete_item(table,item_id):
     return jsonify(ok=True)
 
 def register_order_finance(c, order_id, payments=None):
-    """Rebuild this OS's Financeiro entries using the OS service month.
+    """Rebuild this OS's Financeiro entries using the real receipt dates.
 
-    The financial competence follows the month in which the service/OS was
-    performed. A payment made later (including an overdue installment) stays
-    financially attributed to that original OS month, so the full OS value
-    contributes to the month of service and to the accumulated balance.
+    The OS/service date determines the OS report and commission competence.
+    The Financeiro cash flow uses the date on which each payment was actually
+    received. Therefore, an overdue payment from a September OS received in
+    October is an October cash entry, while the OS itself remains in September.
     """
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
     if not o:
@@ -779,12 +779,9 @@ def register_order_finance(c, order_id, payments=None):
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
 
     for date,pay,val,notes in normalized:
-        # A OS's financial competence is the month of the service, not the
-        # date on which an installment was actually received. This keeps late
-        # payments from September inside September's closing/accumulated
-        # balance, while the payment history still retains its real date.
-        order_date=str(o['date'] or '').strip()
-        period=order_date[:7] if len(order_date)>=7 else _current_finance_period(c)
+        # Financeiro follows the month in which the money was actually received.
+        # The OS date is kept separately for OS reports/commission.
+        period=date[:7] if len(date)>=7 else _current_finance_period(c)
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
             "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
@@ -1392,14 +1389,11 @@ def report():
         except Exception:
             end_filter=month+'-31'
     cleanup_orphan_order_finance(c); c.commit()
-    # Entradas: OS vinculadas usam a data do serviço/OS como competência;
-    # lançamentos manuais usam a própria data do lançamento.
+    # Entradas financeiras sempre usam a data real do recebimento.
+    # A data da OS continua separada para relatórios de serviços/comissão.
     ent_sql="""SELECT COALESCE(SUM(f.value),0) FROM finance f
-              WHERE f.kind='Entrada' AND (
-                (COALESCE(f.order_id,0)>0 AND EXISTS(SELECT 1 FROM orders o WHERE o.id=f.order_id AND o.date>=? AND o.date<=?))
-                OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?)
-              )"""
-    ent=c.execute(ent_sql,(start_filter,end_filter,start_filter,end_filter)).fetchone()[0] or 0
+              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?"""
+    ent=c.execute(ent_sql,(start_filter,end_filter)).fetchone()[0] or 0
     out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
                      WHERE kind='Saída' AND date>=? AND date<=?
                      AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
