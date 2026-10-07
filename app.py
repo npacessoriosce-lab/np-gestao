@@ -94,10 +94,6 @@ def db():
 
 def get_token(): return TOKEN_FILE.read_text(encoding='utf-8').strip() if TOKEN_FILE.exists() else ''
 def set_token(t): TOKEN_FILE.write_text(t.strip(),encoding='utf-8')
-def esc_html(v):
-    import html
-    return html.escape(str(v or ''))
-
 def money(v): return f'R$ {float(v or 0):,.2f}'.replace(',','X').replace('.',',').replace('X','.')
 
 DEFAULT_MESSAGES={
@@ -182,7 +178,7 @@ def init():
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY CHECK(id=1), active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '', last_close_date TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
-    CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '', whatsapp TEXT DEFAULT '', model TEXT DEFAULT '', service TEXT DEFAULT '', payment TEXT DEFAULT '', payment_condition TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY, date TEXT, product_id INTEGER, product TEXT, move_type TEXT, qty REAL, unit_cost REAL DEFAULT 0, order_id INTEGER DEFAULT 0, notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -196,7 +192,6 @@ def init():
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
-    addcol(c,'budgets','whatsapp','TEXT',''); addcol(c,'budgets','model','TEXT',''); addcol(c,'budgets','service','TEXT',''); addcol(c,'budgets','payment','TEXT',''); addcol(c,'budgets','payment_condition','TEXT','')
     addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance_periods','last_close_date','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
     # Garante os dois usuários oficiais da empresa e mantém as credenciais
     # padrão para evitar incompatibilidade com bancos criados em versões anteriores.
@@ -1348,36 +1343,11 @@ def print_all_finance():
 </style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DO FINANCEIRO</h1><div class='sub'>Todos os lançamentos financeiros · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total de entradas</b><strong>{_doc_money(entradas)}</strong></div><div class='card'><b>Despesas pagas</b><strong>{_doc_money(saidas_pagas)}</strong></div><div class='card'><b>Saldo</b><strong>{_doc_money(saldo)}</strong></div><div class='card'><b>Contas fixas pendentes</b><strong>{_doc_money(fixas_pendentes)}</strong></div></div><table><thead><tr><th>DATA</th><th>TIPO</th><th>CATEGORIA</th><th>DESCRIÇÃO</th><th>PAGAMENTO</th><th>STATUS</th><th>VALOR</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
     return html
 
-@app.get('/api/budgets/<int:budget_id>/print')
-def print_budget(budget_id):
-    comp=get_company(); c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone(); c.close()
-    if not b: return 'Orçamento não encontrado',404
-    total=max(0.0,float(b['total'] or 0)-float(b['discount'] or 0))
-    def h(v): return esc_html(str(v or ''))
-    return f'''<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Orçamento #{int(budget_id):05d} - NP Acessórios</title>
-<style>
-@page{{size:A4;margin:12mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
-.sheet{{max-width:820px;margin:0 auto;min-height:1120px;position:relative;padding:8px 8px 55px}}.topline{{height:4px;background:#ed1c24;margin-bottom:12px}}
-.doc-title{{font-size:28px;font-weight:800;margin:0}}.doc-number{{border:1px solid #ed1c24;color:#ed1c24;padding:8px 14px;border-radius:5px;font-weight:800;font-size:14px;text-align:center}}.doc-date{{font-size:11px;color:#555;text-align:right;margin-top:5px}}
-.info-grid{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}}.box{{border:1px solid #d9dce0;border-radius:6px;overflow:hidden}}.box-title{{background:#f5f6f7;border-bottom:1px solid #d9dce0;padding:8px 10px;font-weight:800;font-size:11px}}.box-body{{padding:10px;line-height:1.65;min-height:70px}}.service{{margin-top:12px}}.service-body{{padding:12px;font-size:14px;line-height:1.6;min-height:75px}}.bottom{{display:grid;grid-template-columns:1.2fr .8fr;gap:10px;margin-top:12px}}.summary div{{display:flex;justify-content:space-between;padding:7px 10px;border-bottom:1px solid #eee}}.summary .total{{background:#ed1c24;color:#fff;font-size:17px;font-weight:800;margin:0;padding:11px 10px}}.notes{{min-height:90px;white-space:pre-wrap;line-height:1.5}}.condition{{font-weight:700}}.print-btn{{display:block;margin:0 auto 12px;background:#ed1c24;color:#fff;border:0;border-radius:5px;padding:9px 16px;font-weight:700;cursor:pointer}}.footer{{position:absolute;bottom:8px;left:8px;right:8px;border-top:3px solid #ed1c24;padding-top:8px;text-align:center;font-size:11px;font-weight:700}}@media print{{.print-btn{{display:none}}.sheet{{min-height:0}}}}
-</style><div class='sheet'><button class='print-btn' onclick='print()'>🖨 Imprimir / Salvar PDF</button><div class='topline'></div>
-{company_header_html(comp)}
-<div style='display:flex;justify-content:space-between;align-items:flex-end;padding:15px 0 10px;border-bottom:2px solid #171717'><div class='doc-title'>ORÇAMENTO</div><div><div class='doc-number'>Nº {int(budget_id):05d}</div><div class='doc-date'>DATA: {h(b['date'])}</div></div></div>
-<div class='info-grid'><div class='box'><div class='box-title'>DADOS DO CLIENTE</div><div class='box-body'><b>Nome:</b> {h(b['customer'])}<br><b>WhatsApp:</b> {h(b['whatsapp'])}</div></div><div class='box'><div class='box-title'>DADOS DO VEÍCULO</div><div class='box-body'><b>Modelo:</b> {h(b['model'])}<br><b>Placa:</b> {h(b['plate'])}</div></div></div>
-<div class='box service'><div class='box-title'>SERVIÇO A REALIZAR</div><div class='service-body'>{h(b['service']) or '—'}</div></div>
-<div class='bottom'><div class='box'><div class='box-title'>PAGAMENTO</div><div class='box-body'><b>Forma de pagamento:</b> {h(b['payment']) or '—'}<br><b>Condição de pagamento:</b> <span class='condition'>{h(b['payment_condition']) or '—'}</span></div></div><div class='box summary'><div><b>VALOR</b><span>{money(b['total'])}</span></div><div><b>DESCONTO</b><span>{money(b['discount'])}</span></div><div class='total'><b>TOTAL</b><span>{money(total)}</span></div></div></div>
-<div class='box' style='margin-top:12px'><div class='box-title'>OBSERVAÇÕES</div><div class='box-body notes'>{h(b['notes']) or '—'}</div></div>
-<div class='footer'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>'''
-
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     if not b: c.close(); return jsonify(error='Orçamento não encontrado'),404
-    budget_service=str(b['service'] or '').strip() or 'Orçamento aprovado'
-    budget_notes=str(b['notes'] or '').strip()
-    if b['payment_condition']:
-        budget_notes=(budget_notes+'\n' if budget_notes else '')+'Condição de pagamento: '+str(b['payment_condition']).strip()
-    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,payment,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],budget_service,b['total'],b['discount'],'Aberta',budget_notes,b['payment'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
+    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
     c.execute("UPDATE budgets SET status='Aprovado' WHERE id=?",(budget_id,)); c.commit(); c.close(); return jsonify(id=oid)
 
 @app.post('/api/followups/generate')
