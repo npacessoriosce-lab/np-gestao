@@ -178,7 +178,7 @@ def init():
     CREATE TABLE IF NOT EXISTS stock(id INTEGER PRIMARY KEY, name TEXT UNIQUE, qty REAL DEFAULT 0, unit_cost REAL DEFAULT 0, min_qty REAL DEFAULT 0, unit TEXT DEFAULT 'un', supplier TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS finance(id INTEGER PRIMARY KEY, date TEXT, kind TEXT, description TEXT, value REAL DEFAULT 0, payment TEXT DEFAULT '', category TEXT DEFAULT '', order_id INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS finance_periods(id INTEGER PRIMARY KEY CHECK(id=1), active_month TEXT DEFAULT '', closed_months TEXT DEFAULT '', last_close_date TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS followups(id INTEGER PRIMARY KEY, customer TEXT, phone TEXT, plate TEXT, service TEXT, service_date TEXT, days_after INTEGER DEFAULT 30, due_date TEXT, status TEXT DEFAULT 'Pendente');
-    CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, plate TEXT, total REAL DEFAULT 0, discount REAL DEFAULT 0, status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
+    CREATE TABLE IF NOT EXISTS budgets(id INTEGER PRIMARY KEY, date TEXT, customer TEXT, phone TEXT DEFAULT '', model TEXT DEFAULT '', plate TEXT, service TEXT DEFAULT '', total REAL DEFAULT 0, discount REAL DEFAULT 0, payment_method TEXT DEFAULT '', payment_condition TEXT DEFAULT '', status TEXT DEFAULT 'Orçamento', notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY, date TEXT, product_id INTEGER, product TEXT, move_type TEXT, qty REAL, unit_cost REAL DEFAULT 0, order_id INTEGER DEFAULT 0, notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
@@ -191,7 +191,7 @@ def init():
     addcol(c,'services','category','TEXT',''); addcol(c,'services','duration','TEXT',''); addcol(c,'services','notes','TEXT',''); addcol(c,'services','active','INTEGER','1')
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
-    # Campos adicionais do Orçamento. Migração segura: não altera nem apaga os dados existentes.
+    # Campos adicionais do Orçamento — somente estrutura do módulo de Orçamentos.
     addcol(c,'budgets','phone','TEXT',''); addcol(c,'budgets','model','TEXT',''); addcol(c,'budgets','service','TEXT',''); addcol(c,'budgets','payment_method','TEXT',''); addcol(c,'budgets','payment_condition','TEXT','')
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
     addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance_periods','last_close_date','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
@@ -673,7 +673,11 @@ def generic(table):
                 r['type']=(v.get('type') or '') if v else ''
 
         c.close(); return jsonify(rows)
-    data=request.json or {}; cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
+    data=request.json or {};
+    if table=='budgets':
+        # Garante que os campos novos do orçamento existam antes de filtrar o POST.
+        addcol(c,'budgets','phone','TEXT',''); addcol(c,'budgets','model','TEXT',''); addcol(c,'budgets','service','TEXT',''); addcol(c,'budgets','payment_method','TEXT',''); addcol(c,'budgets','payment_condition','TEXT','')
+    cols=[x for x in colnames(c,table) if x!='id']; data={k:data[k] for k in data if k in cols}
     if table=='finance':
         ensure_finance_periods(c)
         data['finance_period']=str(data.get('finance_period') or _current_finance_period(c))
@@ -1347,58 +1351,42 @@ def print_all_finance():
 
 @app.get('/api/budgets/<int:budget_id>/print')
 def print_budget(budget_id):
-    # PDF/Imprimir do orçamento: lê exatamente os campos preenchidos no orçamento.
     comp=get_company(); c=db()
     b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     c.close()
-    if not b:
-        return 'Orçamento não encontrado',404
+    if not b: return 'Orçamento não encontrado',404
     b=dict(b)
     from html import escape
-    customer=escape(str(b.get('customer') or ''))
-    phone=escape(str(b.get('phone') or ''))
-    model=escape(str(b.get('model') or ''))
-    plate=escape(str(b.get('plate') or ''))
-    date=escape(str(b.get('date') or ''))
-    service=escape(str(b.get('service') or '')).replace('\n','<br>')
-    notes=escape(str(b.get('notes') or '')).replace('\n','<br>')
-    payment=escape(str(b.get('payment_method') or 'Não informado'))
-    condition=escape(str(b.get('payment_condition') or '—')).replace('\n','<br>')
+    def escv(v): return escape(str(v or ''))
+    customer=escv(b.get('customer')); phone=escv(b.get('phone')); model=escv(b.get('model')); plate=escv(b.get('plate'))
+    date=escv(b.get('date')); service=escv(b.get('service')).replace('\\n','<br>'); notes=escv(b.get('notes')).replace('\\n','<br>')
+    payment=escv(b.get('payment_method') or 'Não informado'); condition=escv(b.get('payment_condition') or '—').replace('\\n','<br>')
     original=float(b.get('total') or 0); discount=float(b.get('discount') or 0); total=max(0,original-discount)
     vehicle={}
     if plate:
-        c=db(); vr=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(str(b.get('plate') or '').strip().upper(),)).fetchone(); c.close()
-        vehicle=dict(vr) if vr else {}
-    brand=escape(str(vehicle.get('brand') or ''))
-    year=escape(str(vehicle.get('year') or ''))
-    color=escape(str(vehicle.get('color') or ''))
-    if not phone and vehicle.get('phone'): phone=escape(str(vehicle.get('phone') or ''))
-    vehicle_model=model or escape(str(vehicle.get('model') or ''))
-    logo=''
-    if comp.get('logo_filename'):
-        logo=f"<img class='logo' src='/uploads/company/{escape(str(comp['logo_filename']))}?v={int(datetime.datetime.now().timestamp())}' alt='Logo'>"
-    company_name=escape(str(comp.get('fantasy_name') or comp.get('legal_name') or 'NP ACESSÓRIOS AUTOMOTIVOS'))
+        c=db(); vr=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(str(b.get('plate') or '').strip().upper(),)).fetchone(); c.close(); vehicle=dict(vr) if vr else {}
+    brand=escv(vehicle.get('brand')); year=escv(vehicle.get('year')); color=escv(vehicle.get('color'))
+    if not phone and vehicle.get('phone'): phone=escv(vehicle.get('phone'))
+    vehicle_model=model or escv(vehicle.get('model'))
+    company_name=escv(comp.get('fantasy_name') or comp.get('legal_name') or 'NP ACESSÓRIOS AUTOMOTIVOS')
     address=' '.join(x for x in [comp.get('street'),comp.get('number'),comp.get('complement')] if x)
     city=' - '.join(x for x in [comp.get('city'),comp.get('uf')] if x)
-    contact=' | '.join(x for x in [address,city,comp.get('phone') or comp.get('whatsapp'),comp.get('instagram')] if x)
-    contact=escape(contact)
+    contact=escv(' | '.join(x for x in [address,city,comp.get('phone') or comp.get('whatsapp'),comp.get('instagram')] if x))
+    logo=''
+    if comp.get('logo_filename'): logo=f"<img class='logo' src='/uploads/company/{escape(str(comp['logo_filename']))}' alt='Logo'>"
     html=f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Orçamento - NP Acessórios</title>
-<style>
-@page{{size:A4;margin:12mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;background:#fff;font-size:11px}}.sheet{{max-width:780px;margin:auto}}.top{{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #e21b23;padding-bottom:12px;margin-bottom:14px}}.brand{{display:flex;align-items:center;gap:12px}}.logo{{max-width:150px;max-height:55px;object-fit:contain}}.company{{font-size:12px;font-weight:800}}.contact{{font-size:8.5px;color:#666;line-height:1.45;margin-top:3px;max-width:390px}}.title{{text-align:right}}h1{{font-size:25px;margin:0;color:#111;letter-spacing:.4px}}.meta{{font-size:9px;color:#666;margin-top:4px}}.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}}.box{{border:1px solid #d9d9d9;border-radius:7px;overflow:hidden;margin-bottom:10px}}.head{{background:#f4f4f4;border-bottom:1px solid #d9d9d9;padding:8px 11px;font-size:10px;font-weight:800;text-transform:uppercase}}.body{{padding:11px;min-height:48px}}.row{{display:grid;grid-template-columns:105px 1fr;gap:6px;margin:5px 0}}.label{{font-weight:700;color:#444}}.service{{min-height:90px;line-height:1.5;white-space:normal}}.pay{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}.notes{{min-height:55px;line-height:1.5}}.totals{{margin-left:auto;width:310px;border:1px solid #d9d9d9;border-radius:7px;overflow:hidden;margin-top:14px}}.totalrow{{display:flex;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #eee}}.totalrow:last-child{{border-bottom:0}}.totalrow strong{{font-size:15px}}.grand{{background:#171717;color:#fff;font-size:15px;font-weight:800}}.grand strong{{font-size:18px}}.footer{{margin-top:25px;padding-top:9px;border-top:2px solid #e21b23;text-align:center;font-size:9px;font-weight:700;color:#444}}.print{{position:fixed;right:20px;top:20px;background:#e21b23;color:#fff;border:0;border-radius:6px;padding:9px 14px;font-weight:700;cursor:pointer}}@media print{{.print{{display:none}}}}
-</style><div class='sheet'><div class='top'><div class='brand'>{logo}<div><div class='company'>{company_name}</div><div class='contact'>{contact}</div></div></div><div class='title'><h1>ORÇAMENTO</h1><div class='meta'>Nº {int(b.get('id') or 0):05d} · {date}</div></div></div>
+<style>@page{{size:A4;margin:12mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;color:#171717;margin:0;font-size:11px}}.sheet{{max-width:780px;margin:auto}}.top{{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #e21b23;padding-bottom:12px;margin-bottom:14px}}.brand{{display:flex;align-items:center;gap:12px}}.logo{{max-width:135px;max-height:52px;object-fit:contain}}.company{{font-size:12px;font-weight:800}}.contact{{font-size:8.5px;color:#666;line-height:1.4;margin-top:3px;max-width:390px}}.title{{text-align:right}}h1{{font-size:25px;margin:0}}.meta{{font-size:9px;color:#666;margin-top:4px}}.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}}.box{{border:1px solid #d8d8d8;border-radius:7px;overflow:hidden;margin-bottom:10px}}.head{{background:#f4f4f4;border-bottom:1px solid #d8d8d8;padding:8px 11px;font-size:10px;font-weight:800;text-transform:uppercase}}.body{{padding:11px}}.row{{display:grid;grid-template-columns:105px 1fr;gap:6px;margin:5px 0}}.label{{font-weight:700;color:#444}}.service{{min-height:80px;line-height:1.5;white-space:normal}}.pay{{display:grid;grid-template-columns:1fr 1fr;gap:20px}}.notes{{min-height:55px;line-height:1.5}}.totals{{margin-left:auto;width:310px;border:1px solid #d8d8d8;border-radius:7px;overflow:hidden;margin-top:14px}}.totalrow{{display:flex;justify-content:space-between;padding:9px 12px;border-bottom:1px solid #eee}}.grand{{background:#171717;color:#fff;font-weight:800}}.grand strong{{font-size:18px}}.footer{{margin-top:24px;padding-top:9px;border-top:2px solid #e21b23;text-align:center;font-size:9px;font-weight:700;color:#444}}.print{{position:fixed;right:18px;top:18px;background:#e21b23;color:#fff;border:0;border-radius:6px;padding:9px 14px;font-weight:700;cursor:pointer}}@media print{{.print{{display:none}}}}</style>
+<div class='sheet'><div class='top'><div class='brand'>{logo}<div><div class='company'>{company_name}</div><div class='contact'>{contact}</div></div></div><div class='title'><h1>ORÇAMENTO</h1><div class='meta'>Nº {int(b.get('id') or 0):05d} · {date}</div></div></div>
 <div class='grid2'><div class='box'><div class='head'>Dados do cliente</div><div class='body'><div class='row'><div class='label'>Nome:</div><div>{customer or '—'}</div></div><div class='row'><div class='label'>WhatsApp:</div><div>{phone or '—'}</div></div></div></div><div class='box'><div class='head'>Dados do veículo</div><div class='body'><div class='row'><div class='label'>Marca:</div><div>{brand or '—'}</div></div><div class='row'><div class='label'>Modelo:</div><div>{vehicle_model or '—'}</div></div><div class='row'><div class='label'>Placa:</div><div>{plate or '—'}</div></div><div class='row'><div class='label'>Ano / Cor:</div><div>{' / '.join(x for x in [year,color] if x) or '—'}</div></div></div></div></div>
-<div class='box'><div class='head'>Serviço a realizar</div><div class='body service'>{service or 'Serviço não informado.'}</div></div>
-<div class='box'><div class='head'>Condições de pagamento</div><div class='body pay'><div><div class='label'>Forma de pagamento</div><div style='margin-top:5px'>{payment}</div></div><div><div class='label'>Condição</div><div style='margin-top:5px'>{condition}</div></div></div></div>
-<div class='box'><div class='head'>Observações</div><div class='body notes'>{notes or '—'}</div></div>
-<div class='totals'><div class='totalrow'><span>VALOR ORIGINAL</span><span>{_doc_money(original)}</span></div><div class='totalrow'><span>DESCONTO</span><span>{_doc_money(discount)}</span></div><div class='totalrow grand'><span>TOTAL</span><strong>{_doc_money(total)}</strong></div></div>
-<div class='footer'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div><button class='print' onclick='window.print()'>Imprimir / Salvar PDF</button></html>"""
+<div class='box'><div class='head'>Serviço a realizar</div><div class='body service'>{service or 'Serviço não informado.'}</div></div><div class='box'><div class='head'>Condições de pagamento</div><div class='body pay'><div><div class='label'>Forma de pagamento</div><div style='margin-top:5px'>{payment}</div></div><div><div class='label'>Condição</div><div style='margin-top:5px'>{condition}</div></div></div></div><div class='box'><div class='head'>Observações</div><div class='body notes'>{notes or '—'}</div></div>
+<div class='totals'><div class='totalrow'><span>VALOR ORIGINAL</span><span>{_doc_money(original)}</span></div><div class='totalrow'><span>DESCONTO</span><span>{_doc_money(discount)}</span></div><div class='totalrow grand'><span>TOTAL</span><strong>{_doc_money(total)}</strong></div></div><div class='footer'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div><button class='print' onclick='window.print()'>Imprimir / Salvar PDF</button></html>"""
     return html
 
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     if not b: c.close(); return jsonify(error='Orçamento não encontrado'),404
-    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
+    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],b['service'] or 'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
     c.execute("UPDATE budgets SET status='Aprovado' WHERE id=?",(budget_id,)); c.commit(); c.close(); return jsonify(id=oid)
 
 @app.post('/api/followups/generate')
