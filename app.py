@@ -189,7 +189,7 @@ def init():
     # migrations from V12
     addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
     addcol(c,'services','category','TEXT',''); addcol(c,'services','duration','TEXT',''); addcol(c,'services','notes','TEXT',''); addcol(c,'services','active','INTEGER','1')
-    addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
+    addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT',''); addcol(c,'budgets','phone','TEXT',''); addcol(c,'budgets','model','TEXT',''); addcol(c,'budgets','service','TEXT',''); addcol(c,'budgets','payment_method','TEXT',''); addcol(c,'budgets','payment_condition','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
     addcol(c,'stock','unit','TEXT','un'); addcol(c,'stock','supplier','TEXT','')
     addcol(c,'finance','payment','TEXT',''); addcol(c,'finance','category','TEXT',''); addcol(c,'finance','order_id','INTEGER','0'); addcol(c,'finance','status','TEXT','Pago'); addcol(c,'finance','finance_period','TEXT',''); addcol(c,'finance_periods','last_close_date','TEXT',''); addcol(c,'finance','recurring','INTEGER','0'); addcol(c,'finance','recurrence_day','INTEGER','0'); addcol(c,'finance','recurrence_parent','INTEGER','0')
@@ -1343,11 +1343,88 @@ def print_all_finance():
 </style><div class='sheet'><div class='head'>{company_header_html(comp)}<div class='title'><div><h1>RELATÓRIO GERAL DO FINANCEIRO</h1><div class='sub'>Todos os lançamentos financeiros · Gerado em {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}</div></div><button class='print' onclick='print()'>Imprimir / Salvar PDF</button></div></div><div class='cards'><div class='card'><b>Total de entradas</b><strong>{_doc_money(entradas)}</strong></div><div class='card'><b>Despesas pagas</b><strong>{_doc_money(saidas_pagas)}</strong></div><div class='card'><b>Saldo</b><strong>{_doc_money(saldo)}</strong></div><div class='card'><b>Contas fixas pendentes</b><strong>{_doc_money(fixas_pendentes)}</strong></div></div><table><thead><tr><th>DATA</th><th>TIPO</th><th>CATEGORIA</th><th>DESCRIÇÃO</th><th>PAGAMENTO</th><th>STATUS</th><th>VALOR</th></tr></thead><tbody>{trs}</tbody></table><div class='foot'>NP ACESSÓRIOS AUTOMOTIVOS | Obrigado pela preferência!</div></div></html>"""
     return html
 
+
+@app.get('/api/budgets/<int:budget_id>/print')
+def print_budget(budget_id):
+    comp=get_company()
+    c=db()
+    b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
+    if not b:
+        c.close()
+        return 'Orçamento não encontrado',404
+    v=None
+    plate=str(b['plate'] or '').strip()
+    if plate:
+        v=c.execute('SELECT * FROM vehicles WHERE plate=? LIMIT 1',(plate,)).fetchone()
+    if not v and str(b['customer'] or '').strip():
+        v=c.execute("SELECT * FROM vehicles WHERE UPPER(TRIM(customer))=UPPER(TRIM(?)) ORDER BY id LIMIT 1",(str(b['customer'] or '').strip(),)).fetchone()
+    seq_rows=c.execute('SELECT id FROM budgets ORDER BY id').fetchall()
+    display_map={int(r['id']):i+1 for i,r in enumerate(seq_rows)}
+    display_number=display_map.get(int(budget_id),budget_id)
+    c.close()
+
+    phone=str(b['phone'] or '').strip() if 'phone' in b.keys() else ''
+    model=str(b['model'] or '').strip() if 'model' in b.keys() else ''
+    if not phone and v: phone=str(v['phone'] or '').strip()
+    if not model and v: model=str(v['model'] or '').strip()
+    brand=str(v['brand'] or '').strip() if v else ''
+    year=str(v['year'] or '').strip() if v else ''
+    color=str(v['color'] or '').strip() if v else ''
+    plate=plate or (str(v['plate'] or '').strip() if v else '')
+    service=str(b['service'] or '').strip() if 'service' in b.keys() else ''
+    notes=str(b['notes'] or '').strip()
+    payment_method=str(b['payment_method'] or '').strip() if 'payment_method' in b.keys() else ''
+    payment_condition=str(b['payment_condition'] or '').strip() if 'payment_condition' in b.keys() else ''
+    original=float(b['total'] or 0)
+    discount=float(b['discount'] or 0)
+    total=max(0,original-discount)
+    date_value=str(b['date'] or datetime.date.today().isoformat())
+    try: date_label=datetime.datetime.strptime(date_value[:10],'%Y-%m-%d').strftime('%d/%m/%Y')
+    except Exception: date_label=date_value
+
+    esc_html=lambda x: str(x or '').replace('&','&amp;').replace('<','&lt;').replace('>','&gt;').replace('\n','<br>')
+    service_html=esc_html(service) if service else '<span class="muted">Serviço não informado.</span>'
+    notes_html=esc_html(notes) if notes else '<span class="muted">—</span>'
+    condition_html=esc_html(payment_condition) if payment_condition else '<span class="muted">—</span>'
+    payment_html=esc_html(payment_method) if payment_method else '<span class="muted">Não informado</span>'
+    return f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'><title>Orçamento #{display_number} - NP Acessórios</title>
+<style>
+@page{{size:A4;margin:10mm}}*{{box-sizing:border-box}}body{{font-family:Arial,Helvetica,sans-serif;margin:0;color:#171717;background:#fff;font-size:12px}}
+.sheet{{max-width:820px;margin:0 auto;position:relative;padding:8px 8px 55px;min-height:1120px}}.sheet:before{{content:"";position:absolute;top:0;right:0;width:110px;height:4px;background:#ed1c24}}
+.doc-header{{display:flex;justify-content:space-between;align-items:center;gap:25px;padding:4px 0 12px;border-bottom:1px solid #d8d8d8}}.doc-brand{{display:flex;align-items:center;gap:14px;min-width:45%}}.doc-logo{{max-width:190px;max-height:65px;object-fit:contain;display:block}}.doc-company-name{{font-size:13px;font-weight:700;line-height:1.2}}.doc-contact{{text-align:right;line-height:1.5;color:#444;font-size:10.5px}}
+.title-row{{display:flex;justify-content:space-between;align-items:flex-end;padding:17px 0 12px;border-bottom:2px solid #171717}}h1{{font-size:28px;margin:0;font-weight:800;letter-spacing:-.5px}}h1 span{{color:#ed1c24}}.number{{border:1px solid #ed1c24;padding:7px 13px;border-radius:4px;font-weight:800;font-size:13px;color:#ed1c24;text-align:center;min-width:135px}}.date{{font-size:11px;color:#555;margin-top:5px;text-align:right}}
+.grid2{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:13px}}.box{{border:1px solid #d9dce0;border-radius:6px;overflow:hidden}}.box-title{{padding:8px 10px;background:#f5f6f7;border-bottom:1px solid #d9dce0;font-weight:800;font-size:11px}}.box-body{{padding:9px 10px;min-height:92px}}.line{{display:flex;gap:7px;margin:5px 0;line-height:1.35}}.label{{font-weight:700;color:#555;min-width:76px}}
+.service-box{{margin-top:12px}}.service-body{{padding:11px 12px;min-height:100px;line-height:1.5}}.service-text{{font-weight:600}}
+.payment-box{{margin-top:12px}}.payment-body{{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:11px 12px}}.notes-box{{margin-top:12px}}.notes-body{{padding:11px 12px;min-height:65px;line-height:1.5}}
+.totals{{margin-top:13px;margin-left:auto;width:320px;border:1px solid #d9dce0;border-radius:6px;overflow:hidden}}.trow{{display:flex;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #ececec}}.trow:last-child{{border-bottom:0}}.trow.total{{background:#171717;color:#fff;font-size:15px;font-weight:800}}.trow.discount span:last-child{{color:#ed1c24;font-weight:700}}
+.signatures{{display:grid;grid-template-columns:1fr 1fr;gap:45px;margin-top:38px}}.sig{{border-top:1px solid #777;text-align:center;padding-top:7px;font-size:10px;color:#555}}
+.doc-footer{{position:absolute;left:8px;right:8px;bottom:7px;text-align:center;border-top:2px solid #ed1c24;padding-top:7px;font-weight:700;font-size:10px}}.muted{{color:#777}}.print{{position:fixed;top:12px;right:12px;background:#ed1c24;color:#fff;border:0;padding:9px 13px;border-radius:5px;font-weight:700;cursor:pointer}}@media print{{.print{{display:none}}}}
+</style>
+<div class='sheet'>
+{company_header_html(comp)}
+<div class='title-row'><h1><span>ORÇAMENTO</span></h1><div><div class='number'>ORÇAMENTO Nº {display_number:05d}</div><div class='date'>DATA: {date_label}</div></div></div>
+<div class='grid2'>
+<div class='box'><div class='box-title'>DADOS DO CLIENTE</div><div class='box-body'><div class='line'><span class='label'>Nome:</span><span>{esc_html(b['customer'])}</span></div><div class='line'><span class='label'>WhatsApp:</span><span>{esc_html(phone) or '—'}</span></div></div></div>
+<div class='box'><div class='box-title'>DADOS DO VEÍCULO</div><div class='box-body'><div class='line'><span class='label'>Marca:</span><span>{esc_html(brand) or '—'}</span></div><div class='line'><span class='label'>Modelo:</span><span>{esc_html(model) or '—'}</span></div><div class='line'><span class='label'>Placa:</span><span>{esc_html(plate) or '—'}</span></div><div class='line'><span class='label'>Ano / Cor:</span><span>{esc_html(' / '.join(x for x in [year,color] if x)) or '—'}</span></div></div></div>
+</div>
+<div class='box service-box'><div class='box-title'>SERVIÇO A REALIZAR</div><div class='service-body'>{service_html}</div></div>
+<div class='box payment-box'><div class='box-title'>CONDIÇÕES DE PAGAMENTO</div><div class='payment-body'><div><b>Forma de pagamento</b><div style='margin-top:5px'>{payment_html}</div></div><div><b>Condição</b><div style='margin-top:5px'>{condition_html}</div></div></div></div>
+<div class='box notes-box'><div class='box-title'>OBSERVAÇÕES</div><div class='notes-body'>{notes_html}</div></div>
+<div class='totals'><div class='trow'><span>VALOR ORIGINAL</span><span>{_doc_money(original)}</span></div><div class='trow discount'><span>DESCONTO</span><span>{_doc_money(discount)}</span></div><div class='trow total'><span>TOTAL</span><span>{_doc_money(total)}</span></div></div>
+<div class='signatures'><div class='sig'>CLIENTE</div><div class='sig'>NP ACESSÓRIOS AUTOMOTIVOS</div></div>
+{document_footer_html(comp)}
+</div><button class='print' onclick='window.print()'>Imprimir / Salvar PDF</button></html>"""
+
 @app.post('/api/budgets/<int:budget_id>/to-order')
 def budget_to_order(budget_id):
     c=db(); b=c.execute('SELECT * FROM budgets WHERE id=?',(budget_id,)).fetchone()
     if not b: c.close(); return jsonify(error='Orçamento não encontrado'),404
-    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],'Orçamento aprovado',b['total'],b['discount'],'Aberta',b['notes'],datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
+    budget_service=str(b['service'] or '').strip() if 'service' in b.keys() else ''
+    budget_notes=str(b['notes'] or '').strip()
+    payment_condition=str(b['payment_condition'] or '').strip() if 'payment_condition' in b.keys() else ''
+    if payment_condition:
+        budget_notes=(budget_notes+' | Condição de pagamento: '+payment_condition).strip(' |')
+    cur=c.execute("INSERT INTO orders(date,customer,plate,service,value,discount,status,notes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(b['date'],b['customer'],b['plate'],budget_service or 'Orçamento aprovado',b['total'],b['discount'],'Aberta',budget_notes,datetime.datetime.now().isoformat(timespec='seconds'))); oid=cur.lastrowid
     c.execute("UPDATE budgets SET status='Aprovado' WHERE id=?",(budget_id,)); c.commit(); c.close(); return jsonify(id=oid)
 
 @app.post('/api/followups/generate')
