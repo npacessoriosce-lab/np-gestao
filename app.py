@@ -1478,8 +1478,23 @@ def report():
     out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
                      WHERE kind='Saída' AND date>=? AND date<=?
                      AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
-    services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
-                                             FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
+    # Serviços realizados são agrupados pela data da OS; recebido/pendente é calculado
+    # somente com entradas vinculadas à mesma OS, mantendo a competência do serviço.
+    services=[dict(x) for x in c.execute("""SELECT o.service, COUNT(*) qtd,
+        COALESCE(SUM(o.value-COALESCE(o.discount,0)),0) total,
+        COALESCE(SUM(CASE WHEN COALESCE(fr.recebido,0) > (o.value-COALESCE(o.discount,0))
+                          THEN (o.value-COALESCE(o.discount,0)) ELSE COALESCE(fr.recebido,0) END),0) recebido,
+        COALESCE(SUM(CASE WHEN (o.value-COALESCE(o.discount,0)-COALESCE(fr.recebido,0)) > 0
+                          THEN (o.value-COALESCE(o.discount,0)-COALESCE(fr.recebido,0)) ELSE 0 END),0) pendente,
+        COALESCE(SUM(o.cost),0) custo
+        FROM orders o
+        LEFT JOIN (SELECT order_id, SUM(value) recebido FROM finance
+                   WHERE kind='Entrada' AND COALESCE(order_id,0)>0 GROUP BY order_id) fr ON fr.order_id=o.id
+        WHERE o.date>=? AND o.date<=?
+        GROUP BY o.service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
+    services_total=sum(float(x.get('total') or 0) for x in services)
+    services_received=sum(float(x.get('recebido') or 0) for x in services)
+    services_pending=sum(float(x.get('pendente') or 0) for x in services)
     methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
                                             LEFT JOIN orders o ON o.id=f.order_id
                                             WHERE f.kind='Entrada'
@@ -1494,7 +1509,7 @@ def report():
                                                   OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?))
                                            ORDER BY date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
-    c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
+    c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,services_total=services_total,services_received=services_received,services_pending=services_pending,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
 @app.get('/api/dashboard')
 def dashboard():
