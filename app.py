@@ -498,26 +498,24 @@ def _month_label(month):
         return str(month)
 
 def ensure_finance_periods(c):
-    """Mantém a competência financeira coerente com a data real do lançamento.
-
-    • Lançamento manual/despesa: mês da própria data do lançamento.
-    • Recebimento de OS: mês da data real do recebimento.
-
-    A data da OS continua sendo usada nos relatórios de serviços/OS e comissão,
-    mas não altera o caixa do mês em que o pagamento foi efetivamente recebido.
+    """Define a competência das entradas de OS pelo mês da OS/serviço.
+    Pagamentos recebidos depois continuam vinculados ao mês da OS.
+    Lançamentos manuais e despesas continuam usando a própria data.
     """
     active=_current_finance_period(c)
     try:
-        # Primeiro, todos os lançamentos que NÃO são recebimentos de OS seguem
-        # a própria data. Isso corrige registros antigos que ficaram com uma
-        # competência incorreta após a implantação do fechamento mensal.
         c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL AND substr(date,1,7)<>''")
-        # Para recebimentos vinculados a OS, a competência é a data real do pagamento.
-        c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE kind='Entrada' AND order_id>0 AND date IS NOT NULL AND substr(date,1,7)<>''")
+        c.execute("""UPDATE finance
+                     SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id)
+                     WHERE kind='Entrada' AND order_id>0
+                       AND EXISTS(SELECT 1 FROM orders o WHERE o.id=finance.order_id AND o.date IS NOT NULL AND substr(o.date,1,7)<>'')""")
     except Exception:
         try:
             c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE COALESCE(order_id,0)=0 AND date IS NOT NULL")
-            c.execute("UPDATE finance SET finance_period=substr(date,1,7) WHERE kind='Entrada' AND order_id>0 AND date IS NOT NULL")
+            c.execute("""UPDATE finance
+                         SET finance_period=(SELECT substr(o.date,1,7) FROM orders o WHERE o.id=finance.order_id)
+                         WHERE kind='Entrada' AND order_id>0
+                           AND EXISTS(SELECT 1 FROM orders o WHERE o.id=finance.order_id AND o.date IS NOT NULL)""")
         except Exception:
             pass
     return active
@@ -824,9 +822,11 @@ def register_order_finance(c, order_id, payments=None):
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
 
     for date,pay,val,notes in normalized:
-        # Financeiro follows the month in which the money was actually received.
-        # The OS date is kept separately for OS reports/commission.
-        period=date[:7] if len(date)>=7 else _current_finance_period(c)
+        # A entrada de OS pertence à competência da OS/serviço, mesmo quando
+        # o cliente paga em um mês posterior. A data real do recebimento fica
+        # preservada em `date` para histórico do pagamento.
+        os_date=str(o['date'] or date or datetime.date.today().isoformat())
+        period=os_date[:7] if len(os_date)>=7 else _current_finance_period(c)
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
             "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
@@ -1467,22 +1467,32 @@ def report():
         except Exception:
             end_filter=month+'-31'
     cleanup_orphan_order_finance(c); c.commit()
-    # Entradas financeiras sempre usam a data real do recebimento.
-    # A data da OS continua separada para relatórios de serviços/comissão.
+    # Entradas vinculadas a OS seguem a competência da data da OS/serviço.
+    # Lançamentos manuais (sem order_id) seguem a data do próprio lançamento.
     ent_sql="""SELECT COALESCE(SUM(f.value),0) FROM finance f
-              WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?"""
-    ent=c.execute(ent_sql,(start_filter,end_filter)).fetchone()[0] or 0
+              LEFT JOIN orders o ON o.id=f.order_id
+              WHERE f.kind='Entrada'
+                AND ((COALESCE(f.order_id,0)>0 AND o.date>=? AND o.date<=?)
+                     OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?))"""
+    ent=c.execute(ent_sql,(start_filter,end_filter,start_filter,end_filter)).fetchone()[0] or 0
     out=c.execute("""SELECT COALESCE(SUM(value),0) FROM finance
                      WHERE kind='Saída' AND date>=? AND date<=?
                      AND (category!='Conta Fixa' OR status='Pago')""",(start_filter,end_filter)).fetchone()[0] or 0
     services=[dict(x) for x in c.execute("""SELECT service,COUNT(*) qtd,COALESCE(SUM(value-discount),0) total,COALESCE(SUM(cost),0) custo
                                              FROM orders WHERE date>=? AND date<=? GROUP BY service ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
     methods=[dict(x) for x in c.execute("""SELECT f.payment,COALESCE(SUM(f.value),0) total FROM finance f
-                                            WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter)).fetchall()]
-    recent=[dict(x) for x in c.execute("""SELECT f.date,f.description,f.value,f.payment,f.order_id FROM finance f
-                                           WHERE f.kind='Entrada' AND f.date>=? AND f.date<=?
-                                           ORDER BY f.date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter)).fetchall()]
+                                            LEFT JOIN orders o ON o.id=f.order_id
+                                            WHERE f.kind='Entrada'
+                                              AND ((COALESCE(f.order_id,0)>0 AND o.date>=? AND o.date<=?)
+                                                   OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?))
+                                            GROUP BY f.payment ORDER BY total DESC""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
+    recent=[dict(x) for x in c.execute("""SELECT CASE WHEN COALESCE(f.order_id,0)>0 THEN o.date ELSE f.date END AS date,
+                                           f.description,f.value,f.payment,f.order_id
+                                           FROM finance f LEFT JOIN orders o ON o.id=f.order_id
+                                           WHERE f.kind='Entrada'
+                                             AND ((COALESCE(f.order_id,0)>0 AND o.date>=? AND o.date<=?)
+                                                  OR (COALESCE(f.order_id,0)=0 AND f.date>=? AND f.date<=?))
+                                           ORDER BY date DESC,f.id DESC LIMIT 100""",(start_filter,end_filter,start_filter,end_filter)).fetchall()]
     low=[dict(x) for x in c.execute('SELECT * FROM stock WHERE qty<=min_qty ORDER BY qty ASC').fetchall()]
     c.close(); return jsonify(entradas=ent,saidas=out,lucro=ent-out,services=services,methods=methods,recent=recent,low_stock=low,start=start_filter,end=end_filter)
 
