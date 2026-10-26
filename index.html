@@ -433,9 +433,21 @@ async function editRow(t,id,row){
 
 async function loadEditedOrderServices(){
   let r=await api('/api/orders/'+editId+'/items');
-  editOrderItems=r.filter(x=>x.item_type==='servico');
+  editOrderItems=r.filter(x=>String(x.item_type||'').toLowerCase()==='servico' || String(x.item_type||'').toLowerCase()==='serviço');
   let box=document.getElementById('editOrderServices');if(!box)return;
-  if(!editOrderItems.length){box.innerHTML='<div class="msg">Nenhum serviço adicionado a esta OS.</div>';return}
+  if(!editOrderItems.length){
+    // Compatibilidade com OS antigas que guardavam o serviço apenas no campo orders.service.
+    try{
+      const legacy=await api('/api/orders/'+editId);
+      const legacyService=String(legacy.service||'').trim();
+      if(legacyService){
+        const legacyPrice=Number(legacy.total||legacy.value||0);
+        box.innerHTML=`<div class="editServiceRow"><div style="flex:1;min-width:0"><div class="editServiceName">${esc(legacyService)}</div><div class="editServicePrice">Serviço registrado nesta OS antiga${legacyPrice>0?' — '+money(legacyPrice):''}</div><div class="msg" style="margin-top:8px">Este serviço foi salvo no formato antigo da OS. Ele está sendo exibido para não parecer que foi perdido.</div></div></div>`;
+        return;
+      }
+    }catch(e){}
+    box.innerHTML='<div class="msg">Nenhum serviço adicionado a esta OS.</div>';return
+  }
   box.innerHTML=editOrderItems.map(x=>`<div class="editServiceRow"><div style="flex:1;min-width:0"><div class="editServiceName">${esc(x.description)}</div><div class="editServicePrice">Preço atual: ${money(x.unit_price)}${x.qty!=1?' × '+x.qty:''}</div><div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap"><label style="font-size:12px;font-weight:800;color:#555">Valor nesta OS</label><input id="editServicePrice_${x.id}" type="number" min="0" step="0.01" value="${Number(x.unit_price||0).toFixed(2)}" style="width:150px;padding:9px"><button type="button" class="small secondary" onclick="saveEditedServicePrice(${x.id})">💾 Salvar valor</button></div></div><button type="button" class="small danger" onclick="removeServiceFromEditedOrder(${x.id})">🗑 Remover</button></div>`).join('')
 }
 async function saveEditedServicePrice(itemId){
