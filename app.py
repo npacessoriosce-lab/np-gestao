@@ -182,12 +182,12 @@ def init():
     CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY, order_id INTEGER, item_type TEXT, item_id INTEGER DEFAULT 0, description TEXT, qty REAL DEFAULT 1, unit_price REAL DEFAULT 0, unit_cost REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS stock_moves(id INTEGER PRIMARY KEY, date TEXT, product_id INTEGER, product TEXT, move_type TEXT, qty REAL, unit_cost REAL DEFAULT 0, order_id INTEGER DEFAULT 0, notes TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS order_photos(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, area TEXT DEFAULT 'Externo', moment TEXT DEFAULT 'Antes', filename TEXT NOT NULL, original_name TEXT DEFAULT '', created_at TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS order_payments(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, date TEXT, payment TEXT NOT NULL, value REAL DEFAULT 0, notes TEXT DEFAULT '', FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS order_payments(id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL, date TEXT, payment TEXT NOT NULL, value REAL DEFAULT 0, notes TEXT DEFAULT '', fee REAL DEFAULT 0, FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, date TEXT, username TEXT, action TEXT, entity TEXT, entity_id INTEGER DEFAULT 0, description TEXT DEFAULT '');
     CREATE TABLE IF NOT EXISTS company(id INTEGER PRIMARY KEY CHECK(id=1), fantasy_name TEXT DEFAULT 'NP Acessórios', legal_name TEXT DEFAULT '', cnpj TEXT DEFAULT '', ie TEXT DEFAULT '', phone TEXT DEFAULT '', whatsapp TEXT DEFAULT '', email TEXT DEFAULT '', cep TEXT DEFAULT '', street TEXT DEFAULT '', number TEXT DEFAULT '', complement TEXT DEFAULT '', neighborhood TEXT DEFAULT '', city TEXT DEFAULT '', uf TEXT DEFAULT '', instagram TEXT DEFAULT '', website TEXT DEFAULT '', footer TEXT DEFAULT '', logo_filename TEXT DEFAULT '', logo_data TEXT DEFAULT '');
     ''')
     # migrations from V12
-    addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
+    addcol(c,'order_payments','fee','REAL','0'); addcol(c,'order_items','notes','TEXT',''); addcol(c,'vehicles','brand','TEXT',''); addcol(c,'vehicles','fuel','TEXT',''); addcol(c,'vehicles','type','TEXT',''); addcol(c,'vehicles','municipality','TEXT',''); addcol(c,'vehicles','uf','TEXT',''); addcol(c,'vehicles','km','REAL','0'); addcol(c,'vehicles','notes','TEXT','')
     addcol(c,'services','category','TEXT',''); addcol(c,'services','duration','TEXT',''); addcol(c,'services','notes','TEXT',''); addcol(c,'services','active','INTEGER','1')
     addcol(c,'appointments','phone','TEXT',''); addcol(c,'appointments','notes','TEXT','')
     for name,typ,default in [('km','REAL','0'),('delivery_date','TEXT',''),('discount','REAL','0'),('payment','TEXT',''),('notes','TEXT',''),('stock_applied','INTEGER','0'),('created_at','TEXT','')]: addcol(c,'orders',name,typ,default)
@@ -774,7 +774,7 @@ def register_order_finance(c, order_id, payments=None):
     # The order_payments table is the source of truth because it stores the
     # actual date on which each installment/payment was received.
     stored=c.execute(
-        'SELECT date,payment,value,notes FROM order_payments WHERE order_id=? ORDER BY id',
+        'SELECT date,payment,value,notes,fee FROM order_payments WHERE order_id=? ORDER BY id',
         (order_id,)
     ).fetchall()
 
@@ -785,16 +785,18 @@ def register_order_finance(c, order_id, payments=None):
         except Exception: val=0.0
         date=str(row['date'] or '').strip()
         notes=str(row['notes'] or '').strip()
+        try: fee=max(0.0,min(val,float(row['fee'] or 0)))
+        except Exception: fee=0.0
         if pay and val>0:
             if not date:
                 date=str(datetime.date.today().isoformat())
-            normalized.append((date,pay,val,notes))
+            normalized.append((date,pay,val,notes,fee))
 
     # Backward compatibility for older OS records that have no payment rows.
     if not normalized and payments is None:
         raw=str(o['payment'] or '').strip()
         if raw and total>0:
-            normalized=[(str(o['date'] or datetime.date.today().isoformat()),raw,total,'')]
+            normalized=[(str(o['date'] or datetime.date.today().isoformat()),raw,total,'',0.0)]
 
     # If the caller supplied payments for a brand-new/legacy OS before rows
     # exist, use the OS date as the payment date (the payment was recorded at
@@ -815,13 +817,13 @@ def register_order_finance(c, order_id, payments=None):
                 notes=str(notes or '').strip()
                 date=str(o['date'] or datetime.date.today().isoformat())
             if pay and val>0:
-                normalized.append((date,pay,val,notes))
+                normalized.append((date,pay,val,notes,0.0))
 
     # Remove only this OS's previous incoming entries, then rebuild from the
     # payment records. Manual Financeiro entries are never touched.
     c.execute("DELETE FROM finance WHERE order_id=? AND kind='Entrada'",(order_id,))
 
-    for date,pay,val,notes in normalized:
+    for date,pay,val,notes,fee in normalized:
         # A entrada de OS pertence à competência da OS/serviço, mesmo quando
         # o cliente paga em um mês posterior. A data real do recebimento fica
         # preservada em `date` para histórico do pagamento.
@@ -830,9 +832,9 @@ def register_order_finance(c, order_id, payments=None):
         desc=f'OS #{order_id} - {o["service"] or "Serviço"}' + (f' ({notes})' if notes else '')
         c.execute(
             "INSERT INTO finance(date,kind,description,value,payment,category,order_id,finance_period) VALUES(?,?,?,?,?,?,?,?)",
-            (date,'Entrada',desc,val,pay,'Recebimento OS',order_id,period)
+            (date,'Entrada',desc,max(0.0,val-fee),pay,'Recebimento OS',order_id,period)
         )
-    return sum(v for _,_,v,_ in normalized)
+    return sum(max(0.0,v-fee) for _,_,v,_,fee in normalized)
 
 def apply_order_stock(c, order_id):
     o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
@@ -1055,6 +1057,10 @@ def order_payment_add(order_id):
     try: val=float(d.get('value') or 0)
     except Exception: val=0.0
     notes=str(d.get('notes') or '').strip()
+    try: fee=float(d.get('fee') or 0)
+    except Exception: fee=0.0
+    if fee < 0 or fee > val:
+        return jsonify(error='A taxa deve estar entre R$ 0,00 e o valor do pagamento.'),400
     if not pay or val <= 0:
         return jsonify(error='Informe a forma de pagamento e um valor maior que zero.'),400
     c=db()
@@ -1071,16 +1077,16 @@ def order_payment_add(order_id):
         if val>remaining+0.01:
             c.close(); return jsonify(error=f'O pagamento de {money(val)} ultrapassa o restante de {money(remaining)}.'),400
         date=str(d.get('date') or datetime.date.today().isoformat())
-        cur=c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes) VALUES(?,?,?,?,?)',(order_id,date,pay,val,notes))
+        cur=c.execute('INSERT INTO order_payments(order_id,date,payment,value,notes,fee) VALUES(?,?,?,?,?,?)',(order_id,date,pay,val,notes,fee))
         new_received=received+val
         pending=max(0.0,total-new_received)
         status_label='Pago' if pending<=0.01 else 'Pagamento parcial'
-        allp=[dict(x) for x in c.execute('SELECT payment,value,notes FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]
+        allp=[dict(x) for x in c.execute('SELECT payment,value,notes,fee FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]
         register_order_finance(c,order_id,allp)
         c.execute('UPDATE orders SET payment=? WHERE id=?',(status_label,order_id))
         audit(c,'Recebeu','orders',order_id,f'Pagamento registrado: {pay} {money(val)}')
         c.commit()
-        result={'id':cur.lastrowid,'order_id':order_id,'date':date,'payment':pay,'value':val,'notes':notes,'total':total,'received':new_received,'pending':pending,'status':'Pago' if pending<=0.01 else 'Parcial','label':status_label}
+        result={'id':cur.lastrowid,'order_id':order_id,'date':date,'payment':pay,'value':val,'fee':fee,'net_value':max(0.0,val-fee),'notes':notes,'total':total,'received':new_received,'pending':pending,'status':'Pago' if pending<=0.01 else 'Parcial','label':status_label}
         c.close(); return jsonify(result)
     except Exception as e:
         try:c.rollback()
