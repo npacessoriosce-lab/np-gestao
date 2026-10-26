@@ -1065,6 +1065,8 @@ def order_payment_add(order_id):
         return jsonify(error='Informe a forma de pagamento e um valor maior que zero.'),400
     c=db()
     try:
+        # Garante a coluna da taxa mesmo em bancos existentes no Render.
+        addcol(c,'order_payments','fee','REAL','0')
         o=c.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
         if not o:
             c.close(); return jsonify(error='OS não encontrada'),404
