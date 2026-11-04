@@ -1032,7 +1032,7 @@ def card_fees_report():
     start=str(request.args.get('start') or '').strip()
     end=str(request.args.get('end') or '').strip()
     c=db()
-    where=["COALESCE(p.fee,0)>0", "(LOWER(COALESCE(p.payment,'')) LIKE '%cartão%' OR LOWER(COALESCE(p.payment,'')) LIKE '%cartao%')"]
+    where=["COALESCE(p.fee,0)>0"]
     params=[]
     if start:
         where.append('p.date>=?'); params.append(start)
