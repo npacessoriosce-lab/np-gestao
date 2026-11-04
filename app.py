@@ -1026,6 +1026,26 @@ def order_items(order_id):
 def order_payments(order_id):
     c=db(); rows=[dict(x) for x in c.execute('SELECT * FROM order_payments WHERE order_id=? ORDER BY id',(order_id,)).fetchall()]; c.close(); return jsonify(rows)
 
+@app.get('/api/card-fees')
+def card_fees_report():
+    """Consulta isolada das taxas de cartão; não altera lançamentos financeiros."""
+    start=str(request.args.get('start') or '').strip()
+    end=str(request.args.get('end') or '').strip()
+    c=db()
+    where=["COALESCE(p.fee,0)>0", "(LOWER(COALESCE(p.payment,'')) LIKE '%cartão%' OR LOWER(COALESCE(p.payment,'')) LIKE '%cartao%')"]
+    params=[]
+    if start:
+        where.append('p.date>=?'); params.append(start)
+    if end:
+        where.append('p.date<=?'); params.append(end)
+    sql="SELECT p.id,p.order_id,p.date,p.payment,p.value,p.fee,o.customer,o.service FROM order_payments p LEFT JOIN orders o ON o.id=p.order_id WHERE "+' AND '.join(where)+' ORDER BY p.date DESC,p.id DESC'
+    rows=c.execute(sql,params).fetchall()
+    items=[]
+    for r in rows:
+        d=dict(r); d['net_value']=max(0.0,float(d.get('value') or 0)-float(d.get('fee') or 0)); items.append(d)
+    result={'items':items,'gross_total':sum(float(x['value'] or 0) for x in items),'fee_total':sum(float(x['fee'] or 0) for x in items),'net_total':sum(float(x['net_value'] or 0) for x in items)}
+    c.close(); return jsonify(result)
+
 @app.get('/api/orders/payment-statuses')
 def order_payment_statuses():
     c=db()
