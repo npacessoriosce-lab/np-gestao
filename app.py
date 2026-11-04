@@ -1050,13 +1050,17 @@ def card_fees_report():
 def order_payment_statuses():
     c=db()
     orders=c.execute('SELECT id,value,discount FROM orders').fetchall()
-    pays=c.execute('SELECT order_id,COALESCE(SUM(value),0) received FROM order_payments GROUP BY order_id').fetchall()
-    received_map={int(x['order_id']):float(x['received'] or 0) for x in pays}
+    addcol(c,'order_payments','fee','REAL','0')
+    pays=c.execute('SELECT order_id,COALESCE(SUM(value),0) received,COALESCE(SUM(fee),0) fee_total FROM order_payments GROUP BY order_id').fetchall()
+    received_map={int(x['order_id']):{'gross':float(x['received'] or 0),'fee':float(x['fee_total'] or 0)} for x in pays}
     out={}
     for o in orders:
         oid=int(o['id'])
         total=max(0.0,float(o['value'] or 0)-float(o['discount'] or 0))
-        received=received_map.get(oid,0.0)
+        pinfo=received_map.get(oid,{})
+        received=pinfo.get('gross',0.0)
+        fee_total=pinfo.get('fee',0.0)
+        net_received=max(0.0,received-fee_total)
         pending=max(0.0,total-received)
         if total<=0:
             status='Pago'; label='Pago'
@@ -1066,7 +1070,7 @@ def order_payment_statuses():
             status='Parcial'; label='Pagamento parcial'
         else:
             status='Pendente'; label='Pendente'
-        out[str(oid)]={'status':status,'label':label,'total':total,'received':received,'pending':pending}
+        out[str(oid)]={'status':status,'label':label,'total':total,'received':received,'fee_total':fee_total,'net_received':net_received,'pending':pending}
     c.close()
     return jsonify(out)
 
